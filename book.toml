@@ -1,0 +1,10 @@
+[book]
+title = "那个叫 Planner 的家伙在想什么？"
+authors = ["yuuch"]
+language = "zh-CN"
+
+[preprocessor.mermaid]
+command = "mdbook-mermaid"
+
+[output.html]
+additional-js = ["mermaid.min.js", "mermaid-init.js"]
