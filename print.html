@@ -1,0 +1,753 @@
+<!DOCTYPE HTML>
+<html lang="zh-CN" class="light sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>那个叫 Planner 的家伙在想什么？</title>
+        <meta name="robots" content="noindex">
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="favicon-de23e50b.svg">
+        <link rel="shortcut icon" href="favicon-8114d1fc.png">
+        <link rel="stylesheet" href="css/variables-8adf115d.css">
+        <link rel="stylesheet" href="css/general-2459343d.css">
+        <link rel="stylesheet" href="css/chrome-ae938929.css">
+        <link rel="stylesheet" href="css/print-9e4910d8.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="fonts/fonts-9644e21d.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="mdbook-highlight-css" href="highlight-493f70e1.css">
+        <link rel="stylesheet" id="mdbook-tomorrow-night-css" href="tomorrow-night-4c0ae647.css">
+        <link rel="stylesheet" id="mdbook-ayu-highlight-css" href="ayu-highlight-3fdfc3ac.css">
+
+        <!-- Custom theme stylesheets -->
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "";
+            const default_light_theme = "light";
+            const default_dark_theme = "navy";
+            window.path_to_searchindex_js = "searchindex-67a4c2a5.js";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="toc-e6a90b66.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="mdbook-body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('light')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="mdbook-sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("mdbook-sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+                sidebar_toggle.checked = false;
+            }
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
+        </script>
+
+        <nav id="mdbook-sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="toc.html"></iframe>
+            </noscript>
+            <div id="mdbook-sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="mdbook-page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="mdbook-menu-bar-hover-placeholder"></div>
+                <div id="mdbook-menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="mdbook-sidebar-toggle" class="icon-button" for="mdbook-sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="mdbook-sidebar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M0 96C0 78.3 14.3 64 32 64H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32C14.3 128 0 113.7 0 96zM0 256c0-17.7 14.3-32 32-32H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32c-17.7 0-32-14.3-32-32zM448 416c0 17.7-14.3 32-32 32H32c-17.7 0-32-14.3-32-32s14.3-32 32-32H416c17.7 0 32 14.3 32 32z"/></svg></span>
+                        </label>
+                        <button id="mdbook-theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="mdbook-theme-list">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M371.3 367.1c27.3-3.9 51.9-19.4 67.2-42.9L600.2 74.1c12.6-19.5 9.4-45.3-7.6-61.2S549.7-4.4 531.1 9.6L294.4 187.2c-24 18-38.2 46.1-38.4 76.1L371.3 367.1zm-19.6 25.4l-116-104.4C175.9 290.3 128 339.6 128 400c0 3.9 .2 7.8 .6 11.6c1.8 17.5-10.2 36.4-27.8 36.4H96c-17.7 0-32 14.3-32 32s14.3 32 32 32H240c61.9 0 112-50.1 112-112c0-2.5-.1-5-.2-7.5z"/></svg></span>
+                        </button>
+                        <ul id="mdbook-theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-ayu">Ayu</button></li>
+                        </ul>
+                        <button id="mdbook-search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="mdbook-searchbar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M416 208c0 45.9-14.9 88.3-40 122.7L502.6 457.4c12.5 12.5 12.5 32.8 0 45.3s-32.8 12.5-45.3 0L330.7 376c-34.4 25.2-76.8 40-122.7 40C93.1 416 0 322.9 0 208S93.1 0 208 0S416 93.1 416 208zM208 352c79.5 0 144-64.5 144-144s-64.5-144-144-144S64 128.5 64 208s64.5 144 144 144z"/></svg></span>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">那个叫 Planner 的家伙在想什么？</h1>
+
+                    <div class="right-buttons">
+                        <a href="print.html" title="Print this book" aria-label="Print this book">
+                            <span class=fa-svg id="print-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M128 0C92.7 0 64 28.7 64 64v96h64V64H354.7L384 93.3V160h64V93.3c0-17-6.7-33.3-18.7-45.3L400 18.7C388 6.7 371.7 0 354.7 0H128zM384 352v32 64H128V384 368 352H384zm64 32h32c17.7 0 32-14.3 32-32V256c0-35.3-28.7-64-64-64H64c-35.3 0-64 28.7-64 64v96c0 17.7 14.3 32 32 32H64v64c0 35.3 28.7 64 64 64H384c35.3 0 64-28.7 64-64V384zm-16-88c-13.3 0-24-10.7-24-24s10.7-24 24-24s24 10.7 24 24s-10.7 24-24 24z"/></svg></span>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="mdbook-search-wrapper" class="hidden">
+                    <form id="mdbook-searchbar-outer" class="searchbar-outer">
+                        <div class="search-wrapper">
+                            <input type="search" id="mdbook-searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="mdbook-searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <span class=fa-svg id="fa-spin"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M304 48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zm0 416c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM48 304c26.5 0 48-21.5 48-48s-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48zm464-48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM142.9 437c18.7-18.7 18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zm0-294.2c18.7-18.7 18.7-49.1 0-67.9S93.7 56.2 75 75s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zM369.1 437c18.7 18.7 49.1 18.7 67.9 0s18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9z"/></svg></span>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="mdbook-searchresults-outer" class="searchresults-outer hidden">
+                        <div id="mdbook-searchresults-header" class="searchresults-header"></div>
+                        <ul id="mdbook-searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('mdbook-sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('mdbook-sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#mdbook-sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="mdbook-content" class="content">
+                    <main>
+                        <h1 id="那个叫-planner-的家伙在想什么"><a class="header" href="#那个叫-planner-的家伙在想什么">那个叫 Planner 的家伙在想什么？</a></h1>
+<h2 id="简介"><a class="header" href="#简介">简介</a></h2>
+<blockquote>
+<p><strong>代码版本声明</strong>：本笔记内容主要基于 PostgreSQL <strong>REL_18_1</strong> (Development version) 源码进行深度解析。</p>
+</blockquote>
+<p>本书旨在深入解析 PostgreSQL 查询优化器（Query Optimizer）的内部工作原理。PostgreSQL 的优化器是数据库内核中最复杂、最核心的组件之一，负责将 SQL 查询转换为高效的执行计划。</p>
+<h2 id="目标读者"><a class="header" href="#目标读者">目标读者</a></h2>
+<ul>
+<li>数据库内核开发者</li>
+<li>PostgreSQL DBA 和高级用户</li>
+<li>对数据库内部原理感兴趣的学生和研究人员</li>
+</ul>
+<h2 id="内容概览"><a class="header" href="#内容概览">内容概览</a></h2>
+<p>本书按照优化器的执行流程和核心组件进行组织：</p>
+<ol>
+<li><strong>逻辑重写与扁平化</strong>：介绍查询树（Query Tree）在进入代价模型之前的预处理步骤，包括子查询提升、外连接消除等逻辑优化。</li>
+<li><strong>基础设施 (The Core)</strong>：详细讲解支撑优化器的核心数据结构和算法，如等价类、PathKeys、统计信息与代价估算。</li>
+<li><strong>路径搜索 (Scan &amp; Join)</strong>：探讨如何生成单表访问路径以及多表连接路径，包括动态规划算法和遗传算法。</li>
+<li><strong>后置处理</strong>：涵盖连接路径生成之后的步骤，如分组聚合、排序、LockRows 以及并行计划的生成。</li>
+<li><strong>源码深度拆解</strong>：结合源码（主要基于 PostgreSQL 14+），分析关键函数和数据结构。</li>
+</ol>
+<h2 id="学习建议"><a class="header" href="#学习建议">学习建议</a></h2>
+<p>建议配合 PostgreSQL 源码阅读本书。优化器的代码主要位于 <code>src/backend/optimizer</code> 目录下。</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="查询树的预处理"><a class="header" href="#查询树的预处理">查询树的预处理</a></h1>
+<p>在 PostgreSQL 优化器接收到查询树（Query Tree）后，第一步并非直接开始路径搜索，而是进行一系列的预处理。这些预处理步骤旨在简化查询结构，消除不必要的复杂性，并为后续的逻辑优化和物理优化打下基础。</p>
+<h2 id="主要流程"><a class="header" href="#主要流程">主要流程</a></h2>
+<p>预处理主要发生在 <code>subquery_planner</code> 函数的早期阶段。</p>
+<ol>
+<li>
+<p><strong>常量折叠 (Constant Folding)</strong>:</p>
+<ul>
+<li>计算查询中可以预先确定的表达式。例如 <code>WHERE x = 1 + 2</code> 会被重写为 <code>WHERE x = 3</code>。</li>
+<li>利用 <code>eval_const_expressions</code> 函数完成。</li>
+</ul>
+</li>
+<li>
+<p><strong>表达式规范化</strong>:</p>
+<ul>
+<li>将表达式转换为规范形式（Canonical Form），例如将 <code>x + 1 = 5</code> 转换为 <code>x = 4</code>（如果支持），或者将布尔表达式进行标准化（CNF/DNF）。</li>
+<li>处理 <code>ANY</code> / <code>ALL</code> 子查询转换等。</li>
+</ul>
+</li>
+<li>
+<p><strong>视图展开</strong>:</p>
+<ul>
+<li>如果查询中引用了视图，重写器（Rewriter）阶段通常已经处理了规则（Rules），但在优化器阶段，可能通过 <code>pull_up_sublinks</code> 等进一步处理。</li>
+</ul>
+</li>
+<li>
+<p><strong>Qual 预处理</strong>:</p>
+<ul>
+<li>将 <code>WHERE</code> 子句和 <code>JOIN/ON</code> 子句中的条件转换为隐式的 AND 连接列表（List of Expr）。</li>
+<li>处理 <code>NOT</code> 表达式下推。</li>
+</ul>
+</li>
+</ol>
+<h2 id="源码入口"><a class="header" href="#源码入口">源码入口</a></h2>
+<ul>
+<li><code>src/backend/optimizer/plan/planner.c</code>: <code>standard_planner</code> -&gt; <code>subquery_planner</code></li>
+<li><code>src/backend/optimizer/plan/initsplan.c</code></li>
+</ul>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="子查询提升-subquery-pull-up"><a class="header" href="#子查询提升-subquery-pull-up">子查询提升 (Subquery Pull-up)</a></h1>
+<p>子查询提升（Subquery Pull-up）是 PostgreSQL 优化器中最重要的逻辑优化之一。它的主要目的是将子查询（Subquery）合并到父查询（Parent Query）中，从而将原本的层次化结构“扁平化”。</p>
+<h2 id="为什么要进行子查询提升"><a class="header" href="#为什么要进行子查询提升">为什么要进行子查询提升？</a></h2>
+<ol>
+<li><strong>增加连接顺序的选择空间</strong>: 如果保持子查询独立，优化器通常必须先优化子查询，再优化父查询，这限制了连接顺序（Join Order）。扁平化后，子查询中的表可以与父查询中的表自由结合，优化器可以探索更多的连接路径。</li>
+<li><strong>减少执行层级</strong>: 减少了执行器层面的函数调用和上下文切换开销。</li>
+</ol>
+<h2 id="哪些子查询可以被提升"><a class="header" href="#哪些子查询可以被提升">哪些子查询可以被提升？</a></h2>
+<p>主要处理 <code>FROM</code> 子句中的子查询（Subquery in FROM）。</p>
+<ol>
+<li>
+<p><strong>简单子查询 (Simple Subqueries)</strong>:</p>
+<ul>
+<li>不包含 <code>GROUP BY</code>, <code>HAVING</code>, <code>LIMIT</code>, <code>OFFSET</code>, <code>DISTINCT</code>, 集合操作（UNION/INTERSECT/EXCEPT）或窗口函数的子查询。</li>
+<li>这类子查询可以直接合并，将其 <code>WHERE</code> 条件 AND 到父查询中。</li>
+</ul>
+</li>
+<li>
+<p><strong>UNION ALL 子查询</strong>:</p>
+<ul>
+<li>可以将 <code>UNION ALL</code> 扁平化为 Append 关系（Append Relation）。</li>
+</ul>
+</li>
+</ol>
+<h2 id="特殊情况group-by-子查询的提升"><a class="header" href="#特殊情况group-by-子查询的提升">特殊情况：GROUP BY 子查询的提升</a></h2>
+<p>在某些特定条件下，包含 <code>GROUP BY</code> 的子查询也可以被提升，但这通常涉及到更复杂的转换，如 <strong>Aggregate Pushdown</strong> 或 <strong>Join Removal</strong>。PostgreSQL 支持将某些 Outer Join 中的 Group By 子查询提升，但需要保证 Join Key 是 Unique 的。</p>
+<h2 id="源码分析"><a class="header" href="#源码分析">源码分析</a></h2>
+<p>核心函数：<code>pull_up_subqueries</code> (位于 <code>src/backend/optimizer/prep/prepjointree.c</code>)</p>
+<p>该函数递归地遍历 Query Tree 的 <code>jointree</code>，查找 <code>RangeTblRef</code> 指向的子查询。如果满足提升条件，则修改 <code>jointree</code> 结构，将子查询的 <code>FromExpr</code> 合并上来。</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="外连接消除-outer-join-elimination"><a class="header" href="#外连接消除-outer-join-elimination">外连接消除 (Outer Join Elimination)</a></h1>
+<p>外连接消除（Outer Join Elimination）是指在不改变查询语义的前提下，将 Outer Join（Left/Right/Full Join）转换为 Inner Join，或者完全移除该 Join。</p>
+<h2 id="转换原理"><a class="header" href="#转换原理">转换原理</a></h2>
+<h3 id="1-outer-join-转换为-inner-join"><a class="header" href="#1-outer-join-转换为-inner-join">1. Outer Join 转换为 Inner Join</a></h3>
+<p>当 Outer Join 的“空值生成端”（Null-generating side）受到一个“严格”（Strict）的过滤条件限制时，Outer Join 等价于 Inner Join。</p>
+<ul>
+<li><strong>严格条件</strong>: 指当输入为 NULL 时，表达式结果为 NULL 或 False 的条件。例如 <code>WHERE t2.col &gt; 5</code>。</li>
+<li><strong>场景</strong>: <code>SELECT * FROM t1 LEFT JOIN t2 ON t1.id = t2.id WHERE t2.col &gt; 5;</code>
+<ul>
+<li>在 Left Join 中，如果 t2 匹配不上，<code>t2.col</code> 会是 NULL。</li>
+<li><code>NULL &gt; 5</code> 为 NULL（即 False）。</li>
+<li>因此，所有 t2 补 NULL 的行都会被 WHERE 过滤掉。</li>
+<li>查询等价于 <code>SELECT * FROM t1 JOIN t2 ...</code>。</li>
+</ul>
+</li>
+</ul>
+<p>转换的好处是 Inner Join 的连接顺序更灵活（可以交换左右表），而 Outer Join 的顺序通常是固定的。</p>
+<h3 id="2-join-移除-join-removal"><a class="header" href="#2-join-移除-join-removal">2. Join 移除 (Join Removal)</a></h3>
+<p>如果连接的结果没有被使用，且连接操作不影响行数（Cardinality），则可以移除 Join。</p>
+<ul>
+<li><strong>场景</strong>: <code>SELECT t1.x FROM t1 LEFT JOIN t2 ON t1.id = t2.id;</code>
+<ul>
+<li>如果我们只查询 <code>t1</code> 的列。</li>
+<li>且 <code>t2.id</code> 是唯一的（Unique），或者说 <code>t1.id</code> 参照 <code>t2.id</code> 的外键存在。</li>
+<li>Left Join 保证了 <code>t1</code> 的每一行至少出现一次。</li>
+<li>如果 <code>t2</code> 端匹配唯一，则 <code>t1</code> 的行不会膨胀。</li>
+<li>此时可以移除 <code>t2</code> 的连接。</li>
+</ul>
+</li>
+</ul>
+<h2 id="源码分析-1"><a class="header" href="#源码分析-1">源码分析</a></h2>
+<p>核心函数：<code>reduce_outer_joins</code> (位于 <code>src/backend/optimizer/prep/prepjointree.c</code>)</p>
+<p>该函数在 <code>subquery_planner</code> 早期被调用。它通过分析 <code>WHERE</code> 子句和 <code>JOIN/ON</code> 子句中的约束条件（Qualifiers），判断是否满足“严格性”要求。</p>
+<ul>
+<li><strong>Full Join</strong>: 可以先降级为 Left 或 Right，再进一步降级为 Inner。</li>
+<li><strong>Left Join</strong>: 如果右表（Nullable side）有强过滤条件，降级为 Inner。</li>
+</ul>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="等价类-equivalence-classes"><a class="header" href="#等价类-equivalence-classes">等价类 (Equivalence Classes)</a></h1>
+<p>等价类（Equivalence Class, EC）是 PostgreSQL 优化器中用于推导隐含约束条件的核心数据结构。它主要基于 SQL 中的 <code>WHERE</code> 或 <code>JOIN/ON</code> 子句中的等值条件（Equality Clauses）。</p>
+<h2 id="概念"><a class="header" href="#概念">概念</a></h2>
+<p>如果查询包含 <code>A.x = B.y</code> 和 <code>B.y = C.z</code>，根据传递性（Transitivity），我们可以推导出 <code>A.x = C.z</code>。优化器通过将 <code>{A.x, B.y, C.z}</code> 放入同一个等价类来管理这种关系。</p>
+<h2 id="作用"><a class="header" href="#作用">作用</a></h2>
+<ol>
+<li><strong>减少冗余 Quals</strong>: 不需要显式地存储所有两两组合的等值条件，只需维护 EC。</li>
+<li><strong>生成连接条件</strong>: 在考虑表 A 和表 C 连接时，即使原始 SQL 没写 <code>A.x = C.z</code>，优化器可以从 EC 中提取出该条件，允许生成 A 和 C 的直接连接路径。</li>
+<li><strong>排序顺序推导</strong>: 如果 <code>ORDER BY A.x</code>，而 <code>A.x</code> 与 <code>B.y</code> 等价，那么按 <code>B.y</code> 排序的结果也满足 <code>ORDER BY A.x</code>。这对利用索引扫描（Index Scan）或 Merge Join 非常重要。</li>
+</ol>
+<h2 id="数据结构"><a class="header" href="#数据结构">数据结构</a></h2>
+<p>定义在 <code>src/include/nodes/pathnodes.h</code>:</p>
+<pre><code class="language-c">typedef struct EquivalenceClass
+{
+    NodeTag     type;
+    List       *ec_members;     /* list of EquivalenceMembers */
+    List       *ec_sources;     /* list of generating restrictinfos */
+    List       *ec_derives;     /* list of derived restrictinfos */
+    Relids      ec_relids;      /* all relids appearing in ec_members */
+    bool        ec_has_const;   /* does EC contain a constant? */
+    bool        ec_below_outer_join; /* equivalence applies below OJ? */
+    bool        ec_broken;      /* failed to generate canonical pathkeys? */
+    Oid         ec_collation;   /* collation, if datatypes are collatable */
+    /* ... operations info ... */
+} EquivalenceClass;
+</code></pre>
+<ul>
+<li><code>ec_members</code>: 包含等价的表达式（如 <code>A.x</code>, <code>B.y</code>, <code>42</code>）。</li>
+<li><code>ec_has_const</code>: 如果 EC 中包含常量（如 <code>A.x = 42</code>），则意味着 EC 中所有成员都必须等于该常量。这极大地约束了扫描范围。</li>
+</ul>
+<h2 id="构建过程"><a class="header" href="#构建过程">构建过程</a></h2>
+<p>在 <code>query_planner</code> -&gt; <code>make_one_rel</code> 的早期，通过 <code>generate_base_implied_equalities</code> 处理。优化器会扫描所有的 RestrictInfos，寻找 Merge-joinable 的等值子句来构建 EC。</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="路径键-pathkeys"><a class="header" href="#路径键-pathkeys">路径键 (PathKeys)</a></h1>
+<p>PathKeys 是 PostgreSQL 优化器用来表示数据流<strong>排序属性</strong>的数据结构。</p>
+<h2 id="为什么需要-pathkeys"><a class="header" href="#为什么需要-pathkeys">为什么需要 PathKeys？</a></h2>
+<p>在查询执行过程中，许多操作依赖于数据的顺序：</p>
+<ol>
+<li><strong>Merge Join</strong>: 需要输入数据按连接键排序。</li>
+<li><strong>Group By (Sort group)</strong>: 需要按分组键排序。</li>
+<li><strong>Order By</strong>: 最终输出需要满足用户指定的排序。</li>
+<li><strong>Distinct</strong>: 有时通过排序去重。</li>
+</ol>
+<p>如果一个访问路径（Path）——比如 B-Tree 索引扫描——产生的输出已经是有序的，优化器就需要用一种方式标记这种“有序性”，以避免后续不必要的 Sort 操作。PathKeys 就是这种标记。</p>
+<h2 id="pathkeys-与等价类"><a class="header" href="#pathkeys-与等价类">PathKeys 与等价类</a></h2>
+<p>PathKey 不仅仅记录“按某列排序”，而是记录“按某个等价类排序”。</p>
+<ul>
+<li><strong>Canonical PathKeys</strong>: PathKey 指向一个 Equivalence Class (EC)。</li>
+<li><strong>逻辑</strong>: 如果 <code>A.x = B.y</code> (同一个 EC)，那么“按 <code>A.x</code> 排序”和“按 <code>B.y</code> 排序”在物理顺序上是一致的（假设操作符语义一致）。</li>
+<li>因此，PathKey 列表实际上是一组 EC 的列表。例如 <code>ORDER BY A.x, C.z</code> 对应 <code>[EC(A.x), EC(C.z)]</code>。</li>
+</ul>
+<h2 id="数据结构-1"><a class="header" href="#数据结构-1">数据结构</a></h2>
+<pre><code class="language-c">typedef struct PathKey
+{
+    NodeTag     type;
+    EquivalenceClass *pk_eclass; /* value to be ordered */
+    Oid         pk_opfamily;    /* btree opfamily defining the ordering */
+    int         pk_strategy;    /* sort direction (ASC/DESC) */
+    bool        pk_nulls_first; /* do NULLs come before normal values? */
+} PathKey;
+</code></pre>
+<ul>
+<li><code>pk_eclass</code>: 关联的等价类。</li>
+<li><code>pk_opfamily</code>: 排序使用的操作符族（B-tree opfamily）。</li>
+</ul>
+<h2 id="比较-pathkeys"><a class="header" href="#比较-pathkeys">比较 PathKeys</a></h2>
+<p>优化器经常需要比较两条路径的 PathKeys 是否“有用”：</p>
+<ul>
+<li><code>pathkeys_contained_in(keys1, keys2)</code>: 判断 keys1 是否是 keys2 的子集（前缀）。</li>
+<li>如果查询要求 <code>ORDER BY x, y</code>，而路径提供了 <code>x, y, z</code> 的顺序，则是满足需求的。</li>
+</ul>
+<p>通过 PathKeys，优化器可以智能地识别出哪些索引扫描或连接结果可以直接满足排序需求，从而省略昂贵的 Sort 节点。</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="选择率与代价模型-selectivity--cost-model"><a class="header" href="#选择率与代价模型-selectivity--cost-model">选择率与代价模型 (Selectivity &amp; Cost Model)</a></h1>
+<p>代价模型（Cost Model）是基于代价的优化器（CBO）的灵魂。PostgreSQL 将时间作为代价的统一单位。</p>
+<h2 id="成本单位"><a class="header" href="#成本单位">成本单位</a></h2>
+<p>PostgreSQL 在 <code>postgresql.conf</code> 中定义了一系列基础成本参数：</p>
+<ul>
+<li><code>seq_page_cost</code> (默认 1.0): 顺序扫描一个磁盘页面的代价（基准）。</li>
+<li><code>random_page_cost</code> (默认 4.0): 随机访问一个磁盘页面的代价。</li>
+<li><code>cpu_tuple_cost</code>: 处理一行元组的 CPU 代价。</li>
+<li><code>cpu_index_tuple_cost</code>: 处理索引元组的 CPU 代价。</li>
+<li><code>cpu_operator_cost</code>: 执行一个操作符或函数的代价。</li>
+</ul>
+<p>总代价 = I/O 代价 + CPU 代价。</p>
+<h2 id="统计信息-statistics"><a class="header" href="#统计信息-statistics">统计信息 (Statistics)</a></h2>
+<p>为了估算代价，必须先估算<strong>行数</strong>（Cardinality）。而行数的估算依赖于统计信息。
+统计信息存储在 <code>pg_statistic</code> 系统表中（用户可以通过 <code>pg_stats</code> 视图查看）。</p>
+<p>主要统计项：</p>
+<ul>
+<li><code>null_frac</code>: NULL 值的比例。</li>
+<li><code>avg_width</code>: 列的平均宽度（字节）。</li>
+<li><code>n_distinct</code>: 不同值的数量（如果是负数，表示占总行数的比例）。</li>
+<li><code>most_common_vals</code> (MCV): 最常出现的值列表。</li>
+<li><code>most_common_freqs</code>: MCV 对应的频率。</li>
+<li><code>histogram_bounds</code>: 直方图边界（用于非 MCV 的数据分布）。</li>
+<li><code>correlation</code>: 物理行序与逻辑值的相关性（影响 Index Scan 代价）。</li>
+</ul>
+<h2 id="选择率-selectivity"><a class="header" href="#选择率-selectivity">选择率 (Selectivity)</a></h2>
+<p>选择率是一个 0 到 1 之间的概率值，表示经过条件过滤后剩余行数的比例。</p>
+<p><code>Rows = Total_Rows * Selectivity</code></p>
+<h3 id="常用估算函数-srcbackendutilsadtselfuncsc"><a class="header" href="#常用估算函数-srcbackendutilsadtselfuncsc">常用估算函数 (<code>src/backend/utils/adt/selfuncs.c</code>)</a></h3>
+<ul>
+<li><code>eqsel</code>: 等值条件 (<code>=</code>) 的选择率。优先查 MCV，没有则用 <code>1 / n_distinct</code>。</li>
+<li><code>scalarltsel</code> / <code>scalargtsel</code>: 范围条件 (<code>&lt;</code>, <code>&gt;</code>) 的选择率。主要使用直方图。</li>
+<li><code>clauselist_selectivity</code>: 组合多个条件的选择率。假设列之间相互独立（Independence Assumption），通常是连乘 <code>P(A) * P(B)</code>。但 PG 也有扩展统计信息（Extended Statistics）来处理列相关性。</li>
+</ul>
+<h2 id="代价计算示例seq-scan"><a class="header" href="#代价计算示例seq-scan">代价计算示例：Seq Scan</a></h2>
+<p><code>Cost = (disk_pages * seq_page_cost) + (rows * cpu_tuple_cost) + (rows * filter_cost)</code></p>
+<ul>
+<li>优化器会先估算表的大小（pages）和行数（rows）。</li>
+<li>如果有过滤条件，还需要加上计算过滤表达式的 CPU 开销。</li>
+</ul>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="单表扫描路径生成-access-paths"><a class="header" href="#单表扫描路径生成-access-paths">单表扫描路径生成 (Access Paths)</a></h1>
+<p>在这一步，优化器为查询中的每一个基表（Base Relation）生成可能的访问路径（Access Paths）。</p>
+<h2 id="常见的扫描方式"><a class="header" href="#常见的扫描方式">常见的扫描方式</a></h2>
+<h3 id="1-顺序扫描-sequential-scan"><a class="header" href="#1-顺序扫描-sequential-scan">1. 顺序扫描 (Sequential Scan)</a></h3>
+<ul>
+<li><strong>机制</strong>: 从头到尾读取表的所有页面。</li>
+<li><strong>适用场景</strong>: 表很小，或者需要读取大部分行（Selectivity 高）。</li>
+<li><strong>代价</strong>: 主要取决于表的大小（Pages）。</li>
+</ul>
+<h3 id="2-索引扫描-index-scan"><a class="header" href="#2-索引扫描-index-scan">2. 索引扫描 (Index Scan)</a></h3>
+<ul>
+<li><strong>机制</strong>: 遍历 B-Tree（或其他索引），找到匹配的 Tuple ID (TID)，然后回表（Heap Fetch）读取数据。</li>
+<li><strong>适用场景</strong>: 选择率低（High Selectivity），只需要极少数行。</li>
+<li><strong>Index Only Scan</strong>: 如果查询的所有列都在索引中（Covering Index），且可见性映射（VM）显示页面全可见，则无需回表，性能极佳。</li>
+</ul>
+<h3 id="3-位图扫描-bitmap-heap-scan--bitmap-index-scan"><a class="header" href="#3-位图扫描-bitmap-heap-scan--bitmap-index-scan">3. 位图扫描 (Bitmap Heap Scan / Bitmap Index Scan)</a></h3>
+<ul>
+<li><strong>机制</strong>:
+<ol>
+<li><strong>Bitmap Index Scan</strong>: 扫描索引，将满足条件的 TID 记录到位图（Bitmap）中。如果使用了多个索引，可以对位图进行 AND/OR 操作。</li>
+<li><strong>Bitmap Heap Scan</strong>: 根据位图中的 TID，按物理顺序（Physical Order）读取堆表页面。</li>
+</ol>
+</li>
+<li><strong>优势</strong>: 解决了 Index Scan 的随机 I/O 问题，将其转化为更顺序的 I/O。</li>
+<li><strong>劣势</strong>: 无法利用索引的排序特性（输出是无序的）。</li>
+</ul>
+<h3 id="4-tid-scan"><a class="header" href="#4-tid-scan">4. TID Scan</a></h3>
+<ul>
+<li><strong>机制</strong>: 直接根据用户提供的 <code>ctid</code> 访问行。</li>
+<li><strong>场景</strong>: <code>WHERE ctid = '...'</code>。</li>
+</ul>
+<h2 id="源码流程"><a class="header" href="#源码流程">源码流程</a></h2>
+<p>入口：<code>set_rel_pathlist</code> -&gt; <code>set_plain_rel_pathlist</code></p>
+<p>对于每个表，优化器会：</p>
+<ol>
+<li>创建一个 <code>SeqScan</code> 路径（作为保底）。</li>
+<li>查找所有可用的索引。</li>
+<li>对于每个索引，评估是否可以使用（检查 WHERE 条件是否匹配索引列）。</li>
+<li>如果可用，创建 <code>IndexScan</code> 或 <code>BitmapScan</code> 路径。</li>
+<li>将所有生成的路径添加到 <code>RelOptInfo-&gt;pathlist</code> 中。</li>
+</ol>
+<h2 id="pruning-剪枝"><a class="header" href="#pruning-剪枝">Pruning (剪枝)</a></h2>
+<p>在生成路径的过程中，优化器会利用 <code>add_path</code> 函数。该函数会比较新路径与现有路径。如果新路径“明显更差”（代价更高且没有更好的排序特性），则会被直接丢弃，不加入路径列表。</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="多表连接顺序-join-ordering"><a class="header" href="#多表连接顺序-join-ordering">多表连接顺序 (Join Ordering)</a></h1>
+<p>当查询涉及多个表时，决定表的连接顺序（Join Order）是优化器最核心、最耗时的任务。连接顺序的选择对性能影响巨大。</p>
+<h2 id="动态规划-dynamic-programming"><a class="header" href="#动态规划-dynamic-programming">动态规划 (Dynamic Programming)</a></h2>
+<p>PostgreSQL 默认使用标准的动态规划算法（System R 风格）来寻找最优连接树。</p>
+<h3 id="算法步骤"><a class="header" href="#算法步骤">算法步骤</a></h3>
+<ol>
+<li><strong>Level 1</strong>: 已经计算好所有单表（Base Relations）的最优访问路径。</li>
+<li><strong>Level 2</strong>: 考虑所有可能的两表连接（Rel A + Rel B）。计算各种连接方式（NestLoop, Hash, Merge）的代价，保留最优路径。</li>
+<li><strong>Level 3</strong>: 将 Level 2 的结果与第三个表连接（(AB) + C）。</li>
+<li><strong>…</strong></li>
+<li><strong>Level N</strong>: 得到包含所有表的最优路径。</li>
+</ol>
+<h3 id="搜索空间限制"><a class="header" href="#搜索空间限制">搜索空间限制</a></h3>
+<p>理论上，N 个表的连接顺序是 N! (factorial)。为了避免搜索空间爆炸，PG 默认只考虑 <strong>Left-deep Tree</strong>（左深树）和 <strong>Bushy Tree</strong>（灌木丛树/多支树）。</p>
+<ul>
+<li>早期的优化器倾向于左深树（右操作数必须是基表），但现代 PG 也会探索 Bushy Tree（允许两个 Join 的结果再进行 Join）。</li>
+</ul>
+<h3 id="核心函数"><a class="header" href="#核心函数">核心函数</a></h3>
+<ul>
+<li><code>make_one_rel</code>: 构建最终的关系。</li>
+<li><code>make_rel_from_join_list</code>: 根据 <code>join_info_list</code> 指导连接过程。</li>
+<li><code>standard_join_search</code>: 标准的 DP 实现。</li>
+<li><code>join_search_one_level</code>: 计算某一层级的连接。</li>
+</ul>
+<h2 id="join-rel-构建"><a class="header" href="#join-rel-构建">Join Rel 构建</a></h2>
+<p>对于每一对需要尝试连接的关系（RelOptInfo），优化器会调用 <code>make_join_rel</code> -&gt; <code>populate_join_path</code> 来生成 <code>NestLoop</code>, <code>MergeJoin</code>, <code>HashJoin</code> 等具体路径，并根据代价选优。</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="遗传算法-geqo"><a class="header" href="#遗传算法-geqo">遗传算法 (GEQO)</a></h1>
+<p>当参与连接的表数量非常多时（默认 &gt;= 12，由 <code>geqo_threshold</code> 控制），动态规划的搜索空间（指数级增长）会变得太大，导致规划时间过长。此时，PostgreSQL 会切换到 <strong>遗传查询优化 (Genetic Query Optimization, GEQO)</strong>。</p>
+<h2 id="原理"><a class="header" href="#原理">原理</a></h2>
+<p>GEQO 是一种启发式算法，基于生物进化论的原理。它不保证找到全局最优解，但试图在有限时间内找到一个“足够好”的解。</p>
+<p>这个问题本质上类似于 <strong>旅行商问题 (TSP)</strong>：寻找访问所有城市（表）的一条最短路径（最优连接顺序）。</p>
+<h2 id="算法流程"><a class="header" href="#算法流程">算法流程</a></h2>
+<ol>
+<li><strong>种群初始化 (Initialization)</strong>: 随机生成一组连接顺序（个体），称为“种群”。</li>
+<li><strong>适应度评估 (Fitness Evaluation)</strong>: 计算每个个体的代价（即该连接顺序下的总执行代价）。代价越低，适应度越高。</li>
+<li><strong>选择 (Selection)</strong>: 倾向于选择适应度高的个体作为父母。</li>
+<li><strong>交叉 (Crossover)</strong>: 组合父母的基因（连接片段），生成新的后代。</li>
+<li><strong>变异 (Mutation)</strong>: 随机改变后代的一些基因，增加多样性，防止陷入局部最优。</li>
+<li><strong>迭代</strong>: 重复步骤 2-5，直到达到预定的代数或时间限制。</li>
+</ol>
+<h2 id="优缺点"><a class="header" href="#优缺点">优缺点</a></h2>
+<ul>
+<li><strong>优点</strong>: 规划速度快，随表数量线性增长，而非指数增长。</li>
+<li><strong>缺点</strong>: 结果具有随机性（非确定性），可能错过最优计划。</li>
+</ul>
+<h2 id="配置"><a class="header" href="#配置">配置</a></h2>
+<ul>
+<li><code>geqo</code>: 开关。</li>
+<li><code>geqo_threshold</code>: 触发阈值。</li>
+<li><code>geqo_effort</code>: 控制算法的努力程度（种群大小、代数）。</li>
+</ul>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="聚合与排序优化-post-processing"><a class="header" href="#聚合与排序优化-post-processing">聚合与排序优化 (Post-processing)</a></h1>
+<p>在生成了连接路径（Join Paths）之后，优化器还需要处理 <code>GROUP BY</code>, <code>AGGREGATE</code>, <code>ORDER BY</code>, <code>DISTINCT</code>, <code>LIMIT</code> 等子句。这一阶段通常称为 upper planner 阶段。</p>
+<h2 id="聚合-aggregation"><a class="header" href="#聚合-aggregation">聚合 (Aggregation)</a></h2>
+<p>PostgreSQL 支持多种聚合策略：</p>
+<ol>
+<li><strong>Plain Aggregate</strong>: 没有 GROUP BY，只有聚合函数（如 <code>SELECT count(*) FROM t</code>）。</li>
+<li><strong>Sorted Aggregation (GroupAggregate)</strong>:
+<ul>
+<li>要求输入数据按 GROUP BY 键排序。</li>
+<li>流式处理，内存占用低。</li>
+</ul>
+</li>
+<li><strong>Hash Aggregation (HashAggregate)</strong>:
+<ul>
+<li>在内存中构建哈希表。</li>
+<li>通常比排序聚合快，但如果内存不足（超过 <code>work_mem</code>），会溢出到磁盘（Disk Spill）。</li>
+</ul>
+</li>
+</ol>
+<p>优化器会根据输入路径的 PathKeys（是否已排序）和统计信息（组数估算）来决定使用哪种策略。</p>
+<h2 id="排序-sorting"><a class="header" href="#排序-sorting">排序 (Sorting)</a></h2>
+<p>如果在之前的步骤中（Scan/Join）没有产生满足 <code>ORDER BY</code> 要求的顺序，优化器必须在顶层添加一个 <code>Sort</code> 节点。</p>
+<ul>
+<li><strong>Incremental Sort</strong>: 如果数据已经按 <code>(x)</code> 排序，但需要按 <code>(x, y)</code> 排序，PG 可以使用增量排序，只在 <code>x</code> 相同的组内对 <code>y</code> 排序。</li>
+</ul>
+<h2 id="其他操作"><a class="header" href="#其他操作">其他操作</a></h2>
+<ul>
+<li><strong>LockRows</strong>: 处理 <code>SELECT FOR UPDATE / SHARE</code>。通常在顶层添加 <code>LockRows</code> 节点。</li>
+<li><strong>Limit/Offset</strong>: 添加 <code>Limit</code> 节点。如果存在 Limit，优化器可能会倾向于使用 Startup Cost 更低的路径（如 Index Scan 而非 Seq Scan）。</li>
+<li><strong>Window Functions</strong>: 类似于聚合，但需要特定的窗口排序。</li>
+<li><strong>Set Operations</strong>: UNION, INTERSECT, EXCEPT。</li>
+</ul>
+<h2 id="源码入口-1"><a class="header" href="#源码入口-1">源码入口</a></h2>
+<ul>
+<li><code>grouping_planner</code>: 负责处理这些非 Join 的操作。</li>
+<li><code>create_grouping_paths</code>: 生成聚合路径。</li>
+</ul>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="并行执行计划生成-parallel-query-planning"><a class="header" href="#并行执行计划生成-parallel-query-planning">并行执行计划生成 (Parallel Query Planning)</a></h1>
+<p>从 PostgreSQL 9.6 开始，引入了并行查询功能。优化器需要决定是否生成并行计划，以及如何分配 workers。</p>
+<h2 id="核心概念"><a class="header" href="#核心概念">核心概念</a></h2>
+<ol>
+<li><strong>Parallel Safe</strong>: 只有当查询中使用的所有函数和操作符都是“并行安全”的，才允许并行执行。</li>
+<li><strong>Partial Path</strong>: 并行 workers 执行的部分工作路径。例如 <code>Parallel Seq Scan</code>。</li>
+<li><strong>Gather Node</strong>: 负责收集 workers 的结果并汇总的节点。
+<ul>
+<li><code>Gather</code>: 无序收集。</li>
+<li><code>Gather Merge</code>: 按顺序收集（保持下层路径的排序）。</li>
+</ul>
+</li>
+</ol>
+<h2 id="规划流程"><a class="header" href="#规划流程">规划流程</a></h2>
+<ol>
+<li><strong>生成 Partial Paths</strong>:
+<ul>
+<li>在扫描基表时，除了生成常规路径，还会尝试生成 <code>Parallel Seq Scan</code> 等 Partial Paths。</li>
+</ul>
+</li>
+<li><strong>Join 中的并行</strong>:
+<ul>
+<li>如果输入路径是 Partial 的，PG 支持 <strong>Parallel Hash Join</strong> (Shared Hash Table) 和 <strong>Parallel Nested Loop</strong>。</li>
+</ul>
+</li>
+<li><strong>最终汇总</strong>:
+<ul>
+<li>在 <code>standard_planner</code> 的后期，检查是否有名为 <code>Gather</code> 的最优路径。</li>
+<li>如果有，优化器会根据配置（<code>max_parallel_workers_per_gather</code>）和表大小决定启动多少个 workers。</li>
+</ul>
+</li>
+</ol>
+<h2 id="代价模型调整"><a class="header" href="#代价模型调整">代价模型调整</a></h2>
+<p>并行计划的代价 = (Total Cost / Workers) + Communication Cost。
+优化器会权衡并行带来的加速与进程间通信/启动的开销。</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="standard_planner-函数入口"><a class="header" href="#standard_planner-函数入口">standard_planner 函数入口</a></h1>
+<p><code>standard_planner</code> 是 PostgreSQL 默认优化器的主要入口函数。</p>
+<p><strong>位置</strong>: <code>src/backend/optimizer/plan/planner.c</code></p>
+<h2 id="整体流程"><a class="header" href="#整体流程">整体流程</a></h2>
+<p><code>standard_planner</code> 的执行流程大致如下：</p>
+<pre><code class="language-c">PlannedStmt *
+standard_planner(Query *parse, const char *query_string, int cursorOptions,
+                 ParamListInfo boundParams)
+{
+    /* 1. 初始化 */
+    root = makeNode(PlannerInfo);
+
+    /* 2. 预处理 (Subquery Pull-up, Constant Folding 等) */
+    /* 实际上这部分主要在 subquery_planner 中完成 */
+    root-&gt;parse = parse;
+
+    /* 3. 调用 subquery_planner */
+    /* 这是递归优化的核心，处理子查询和当前层级的优化 */
+    plan = subquery_planner(root-&gt;glob, parse, NULL, false, tuple_fraction);
+
+    /* 4. 最终收尾 */
+    /* 将 Plan 树转换为 PlannedStmt，准备交给 Executor */
+    result = makeNode(PlannedStmt);
+    result-&gt;planTree = plan;
+    
+    return result;
+}
+</code></pre>
+<h2 id="subquery_planner"><a class="header" href="#subquery_planner">subquery_planner</a></h2>
+<p><code>subquery_planner</code> 负责处理特定查询层级的逻辑。</p>
+<ol>
+<li><strong>pull_up_subqueries</strong>: 提升子查询。</li>
+<li><strong>preprocess_expression</strong>: 规范化表达式。</li>
+<li><strong>reduce_outer_joins</strong>: 外连接消除。</li>
+<li><strong>grouping_planner</strong>:
+<ul>
+<li>这是真正进行路径搜索的地方。</li>
+<li>它首先调用 <code>query_planner</code> 来处理 Scan/Join 优化。</li>
+<li>然后自己处理 Group By, Agg, Sort, Limit 等非 Join 操作。</li>
+</ul>
+</li>
+</ol>
+<h2 id="query_planner"><a class="header" href="#query_planner">query_planner</a></h2>
+<p><code>query_planner</code> 是核心中的核心 (The Core)：</p>
+<ol>
+<li><strong>setup_simple_rel_arrays</strong>: 初始化 RelOptInfo 数组。</li>
+<li><strong>add_base_rels_to_query</strong>: 识别所有基表。</li>
+<li><strong>make_one_rel</strong>:
+<ul>
+<li><code>set_base_rel_pathlists</code>: 生成单表访问路径。</li>
+<li><code>make_rel_from_join_list</code>: 生成多表连接路径 (DP / GEQO)。</li>
+<li>返回一个代表最终结果关系的 <code>RelOptInfo</code>。</li>
+</ul>
+</li>
+</ol>
+<h2 id="总结"><a class="header" href="#总结">总结</a></h2>
+<p>调用栈：
+<code>standard_planner</code> -&gt; <code>subquery_planner</code> -&gt; <code>grouping_planner</code> -&gt; <code>query_planner</code> -&gt; <code>make_one_rel</code></p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="核心数据结构-reloptinfo"><a class="header" href="#核心数据结构-reloptinfo">核心数据结构 RelOptInfo</a></h1>
+<p>在 PostgreSQL 优化器中，一切皆 <code>RelOptInfo</code>。</p>
+<p><strong>定义</strong>: <code>src/include/nodes/pathnodes.h</code></p>
+<h2 id="概念-1"><a class="header" href="#概念-1">概念</a></h2>
+<p><code>RelOptInfo</code> (Relation Optimizer Info) 用来表示一个“关系”。这个关系可以是：</p>
+<ol>
+<li><strong>Base Relation</strong>: 一个真实的表（或子查询结果）。</li>
+<li><strong>Join Relation</strong>: 两个或多个表连接后的结果。</li>
+<li><strong>Upper Relation</strong>: 进行了聚合、排序后的结果。</li>
+</ol>
+<p>在优化过程中，优化器会为每个参与的表创建一个 RelOptInfo，然后通过两两组合创建新的 Join RelOptInfo。</p>
+<h2 id="关键字段"><a class="header" href="#关键字段">关键字段</a></h2>
+<pre><code class="language-c">typedef struct RelOptInfo
+{
+    NodeTag     type;
+    RelOptKind  reloptkind;     /* RELOPT_BASEREL, RELOPT_JOINREL, etc. */
+    Relids      relids;         /* 包含的基表 ID 集合 (Bitmap) */
+    
+    Rows        rows;           /* 估算的行数 (Cardinality) */
+    int         width;          /* 估算的平均行宽 */
+    
+    List       *reltarget;      /* 关系的输出列 (TargetList) */
+    List       *pathlist;       /* 这是一个 Path 列表！存放所有可能的访问路径 */
+    List       *ppilist;        /* ParamPathInfo list */
+    Path       *cheapest_startup_path; /* 启动代价最低的路径 */
+    Path       *cheapest_total_path;   /* 总代价最低的路径 */
+    
+    /* ... 统计信息, 索引信息, 等价类信息 ... */
+} RelOptInfo;
+</code></pre>
+<h2 id="path-与-reloptinfo-的关系"><a class="header" href="#path-与-reloptinfo-的关系">Path 与 RelOptInfo 的关系</a></h2>
+<ul>
+<li>一个 <code>RelOptInfo</code> 代表逻辑上的一个关系（比如 <code>A Join B</code>）。</li>
+<li><code>pathlist</code> 存储了实现这个关系的多种物理方式（比如 <code>NestLoop(A, B)</code>, <code>HashJoin(A, B)</code>）。</li>
+<li>优化器的目标就是为最终的 <code>RelOptInfo</code> 找到 <code>cheapest_total_path</code>。</li>
+</ul>
+<h2 id="path-数据结构"><a class="header" href="#path-数据结构">Path 数据结构</a></h2>
+<pre><code class="language-c">typedef struct Path
+{
+    NodeTag     type;
+    NodeTag     pathtype;       /* T_SeqScan, T_IndexScan, T_NestLoop ... */
+    RelOptInfo *parent;         /* 所属的 RelOptInfo */
+    
+    Cost        startup_cost;   /* 启动代价 (返回第一行前的代价) */
+    Cost        total_cost;     /* 总代价 (返回所有行) */
+    
+    List       *pathkeys;       /* 结果的排序属性 */
+} Path;
+</code></pre>
+<p>每种具体的路径（如 <code>IndexPath</code>, <code>NestPath</code>）都继承自 <code>Path</code> 结构体，并增加特定的字段。</p>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+
+            </nav>
+
+        </div>
+
+        <template id=fa-eye><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M288 32c-80.8 0-145.5 36.8-192.6 80.6C48.6 156 17.3 208 2.5 243.7c-3.3 7.9-3.3 16.7 0 24.6C17.3 304 48.6 356 95.4 399.4C142.5 443.2 207.2 480 288 480s145.5-36.8 192.6-80.6c46.8-43.5 78.1-95.4 93-131.1c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C433.5 68.8 368.8 32 288 32zM432 256c0 79.5-64.5 144-144 144s-144-64.5-144-144s64.5-144 144-144s144 64.5 144 144zM288 192c0 35.3-28.7 64-64 64c-11.5 0-22.3-3-31.6-8.4c-.2 2.8-.4 5.5-.4 8.4c0 53 43 96 96 96s96-43 96-96s-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6z"/></svg></span></template>
+        <template id=fa-eye-slash><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M38.8 5.1C28.4-3.1 13.3-1.2 5.1 9.2S-1.2 34.7 9.2 42.9l592 464c10.4 8.2 25.5 6.3 33.7-4.1s6.3-25.5-4.1-33.7L525.6 386.7c39.6-40.6 66.4-86.1 79.9-118.4c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C465.5 68.8 400.8 32 320 32c-68.2 0-125 26.3-169.3 60.8L38.8 5.1zM223.1 149.5C248.6 126.2 282.7 112 320 112c79.5 0 144 64.5 144 144c0 24.9-6.3 48.3-17.4 68.7L408 294.5c5.2-11.8 8-24.8 8-38.5c0-53-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6c0 10.2-2.4 19.8-6.6 28.3l-90.3-70.8zm223.1 298L373 389.9c-16.4 6.5-34.3 10.1-53 10.1c-79.5 0-144-64.5-144-144c0-6.9 .5-13.6 1.4-20.2L83.1 161.5C60.3 191.2 44 220.8 34.5 243.7c-3.3 7.9-3.3 16.7 0 24.6c14.9 35.7 46.2 87.7 93 131.1C174.5 443.2 239.2 480 320 480c47.8 0 89.9-12.9 126.2-32.5z"/></svg></span></template>
+        <template id=fa-copy><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M502.6 70.63l-61.25-61.25C435.4 3.371 427.2 0 418.7 0H255.1c-35.35 0-64 28.66-64 64l.0195 256C192 355.4 220.7 384 256 384h192c35.2 0 64-28.8 64-64V93.25C512 84.77 508.6 76.63 502.6 70.63zM464 320c0 8.836-7.164 16-16 16H255.1c-8.838 0-16-7.164-16-16L239.1 64.13c0-8.836 7.164-16 16-16h128L384 96c0 17.67 14.33 32 32 32h47.1V320zM272 448c0 8.836-7.164 16-16 16H63.1c-8.838 0-16-7.164-16-16L47.98 192.1c0-8.836 7.164-16 16-16H160V128H63.99c-35.35 0-64 28.65-64 64l.0098 256C.002 483.3 28.66 512 64 512h192c35.2 0 64-28.8 64-64v-32h-47.1L272 448z"/></svg></span></template>
+        <template id=fa-play><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M73 39c-14.8-9.1-33.4-9.4-48.5-.9S0 62.6 0 80V432c0 17.4 9.4 33.4 24.5 41.9s33.7 8.1 48.5-.9L361 297c14.3-8.7 23-24.2 23-41s-8.7-32.2-23-41L73 39z"/></svg></span></template>
+        <template id=fa-clock-rotate-left><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M75 75L41 41C25.9 25.9 0 36.6 0 57.9V168c0 13.3 10.7 24 24 24H134.1c21.4 0 32.1-25.9 17-41l-30.8-30.8C155 85.5 203 64 256 64c106 0 192 86 192 192s-86 192-192 192c-40.8 0-78.6-12.7-109.7-34.4c-14.5-10.1-34.4-6.6-44.6 7.9s-6.6 34.4 7.9 44.6C151.2 495 201.7 512 256 512c141.4 0 256-114.6 256-256S397.4 0 256 0C185.3 0 121.3 28.7 75 75zm181 53c-13.3 0-24 10.7-24 24V256c0 6.4 2.5 12.5 7 17l72 72c9.4 9.4 24.6 9.4 33.9 0s9.4-24.6 0-33.9l-65-65V152c0-13.3-10.7-24-24-24z"/></svg></span></template>
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="elasticlunr-ef4e11c1.min.js"></script>
+        <script src="mark-09e88c2c.min.js"></script>
+        <script src="searcher-c2a407aa.js"></script>
+
+        <script src="clipboard-1626706a.min.js"></script>
+        <script src="highlight-abc7f01d.js"></script>
+        <script src="book-a0b12cfe.js"></script>
+
+        <!-- Custom JS scripts -->
+
+        <script>
+        window.addEventListener('load', function() {
+            window.setTimeout(window.print, 100);
+        });
+        </script>
+
+
+    </div>
+    </body>
+</html>
