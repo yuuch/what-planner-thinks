@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>等价类 (Equivalence Classes) - 那个叫 Planner 的家伙在想什么？</title>
+        <title>选择率与代价模型 - 那个叫 Planner 的家伙在想什么？</title>
 
 
         <!-- Custom HTML head -->
@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-c0d10b8c.js";
+            window.path_to_searchindex_js = "../searchindex-8651b419.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-4b13ab09.js"></script>
+        <script src="../toc-00ebddb9.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -174,48 +174,56 @@
 
                 <div id="mdbook-content" class="content">
                     <main>
-                        <h1 id="等价类-equivalence-classes"><a class="header" href="#等价类-equivalence-classes">等价类 (Equivalence Classes)</a></h1>
-<p>等价类（Equivalence Class, EC）是 PostgreSQL 优化器中用于推导隐含约束条件的核心数据结构。它主要基于 SQL 中的 <code>WHERE</code> 或 <code>JOIN/ON</code> 子句中的等值条件（Equality Clauses）。</p>
-<h2 id="概念"><a class="header" href="#概念">概念</a></h2>
-<p>如果查询包含 <code>A.x = B.y</code> 和 <code>B.y = C.z</code>，根据传递性（Transitivity），我们可以推导出 <code>A.x = C.z</code>。优化器通过将 <code>{A.x, B.y, C.z}</code> 放入同一个等价类来管理这种关系。</p>
-<h2 id="作用"><a class="header" href="#作用">作用</a></h2>
-<ol>
-<li><strong>减少冗余 Quals</strong>: 不需要显式地存储所有两两组合的等值条件，只需维护 EC。</li>
-<li><strong>生成连接条件</strong>: 在考虑表 A 和表 C 连接时，即使原始 SQL 没写 <code>A.x = C.z</code>，优化器可以从 EC 中提取出该条件，允许生成 A 和 C 的直接连接路径。</li>
-<li><strong>排序顺序推导</strong>: 如果 <code>ORDER BY A.x</code>，而 <code>A.x</code> 与 <code>B.y</code> 等价，那么按 <code>B.y</code> 排序的结果也满足 <code>ORDER BY A.x</code>。这对利用索引扫描（Index Scan）或 Merge Join 非常重要。</li>
-</ol>
-<h2 id="数据结构"><a class="header" href="#数据结构">数据结构</a></h2>
-<p>定义在 <code>src/include/nodes/pathnodes.h</code>:</p>
-<pre><code class="language-c">typedef struct EquivalenceClass
-{
-    NodeTag     type;
-    List       *ec_members;     /* list of EquivalenceMembers */
-    List       *ec_sources;     /* list of generating restrictinfos */
-    List       *ec_derives;     /* list of derived restrictinfos */
-    Relids      ec_relids;      /* all relids appearing in ec_members */
-    bool        ec_has_const;   /* does EC contain a constant? */
-    bool        ec_below_outer_join; /* equivalence applies below OJ? */
-    bool        ec_broken;      /* failed to generate canonical pathkeys? */
-    Oid         ec_collation;   /* collation, if datatypes are collatable */
-    /* ... operations info ... */
-} EquivalenceClass;
-</code></pre>
+                        <h1 id="选择率与代价模型-selectivity--cost-model"><a class="header" href="#选择率与代价模型-selectivity--cost-model">选择率与代价模型 (Selectivity &amp; Cost Model)</a></h1>
+<p>代价模型（Cost Model）是基于代价的优化器（CBO）的灵魂。PostgreSQL 将时间作为代价的统一单位。</p>
+<h2 id="成本单位"><a class="header" href="#成本单位">成本单位</a></h2>
+<p>PostgreSQL 在 <code>postgresql.conf</code> 中定义了一系列基础成本参数：</p>
 <ul>
-<li><code>ec_members</code>: 包含等价的表达式（如 <code>A.x</code>, <code>B.y</code>, <code>42</code>）。</li>
-<li><code>ec_has_const</code>: 如果 EC 中包含常量（如 <code>A.x = 42</code>），则意味着 EC 中所有成员都必须等于该常量。这极大地约束了扫描范围。</li>
+<li><code>seq_page_cost</code> (默认 1.0): 顺序扫描一个磁盘页面的代价（基准）。</li>
+<li><code>random_page_cost</code> (默认 4.0): 随机访问一个磁盘页面的代价。</li>
+<li><code>cpu_tuple_cost</code>: 处理一行元组的 CPU 代价。</li>
+<li><code>cpu_index_tuple_cost</code>: 处理索引元组的 CPU 代价。</li>
+<li><code>cpu_operator_cost</code>: 执行一个操作符或函数的代价。</li>
 </ul>
-<h2 id="构建过程"><a class="header" href="#构建过程">构建过程</a></h2>
-<p>在 <code>query_planner</code> -&gt; <code>make_one_rel</code> 的早期，通过 <code>generate_base_implied_equalities</code> 处理。优化器会扫描所有的 RestrictInfos，寻找 Merge-joinable 的等值子句来构建 EC。</p>
+<p>总代价 = I/O 代价 + CPU 代价。</p>
+<h2 id="统计信息-statistics"><a class="header" href="#统计信息-statistics">统计信息 (Statistics)</a></h2>
+<p>为了估算代价，必须先估算<strong>行数</strong>（Cardinality）。而行数的估算依赖于统计信息。
+统计信息存储在 <code>pg_statistic</code> 系统表中（用户可以通过 <code>pg_stats</code> 视图查看）。</p>
+<p>主要统计项：</p>
+<ul>
+<li><code>null_frac</code>: NULL 值的比例。</li>
+<li><code>avg_width</code>: 列的平均宽度（字节）。</li>
+<li><code>n_distinct</code>: 不同值的数量（如果是负数，表示占总行数的比例）。</li>
+<li><code>most_common_vals</code> (MCV): 最常出现的值列表。</li>
+<li><code>most_common_freqs</code>: MCV 对应的频率。</li>
+<li><code>histogram_bounds</code>: 直方图边界（用于非 MCV 的数据分布）。</li>
+<li><code>correlation</code>: 物理行序与逻辑值的相关性（影响 Index Scan 代价）。</li>
+</ul>
+<h2 id="选择率-selectivity"><a class="header" href="#选择率-selectivity">选择率 (Selectivity)</a></h2>
+<p>选择率是一个 0 到 1 之间的概率值，表示经过条件过滤后剩余行数的比例。</p>
+<p><code>Rows = Total_Rows * Selectivity</code></p>
+<h3 id="常用估算函数-srcbackendutilsadtselfuncsc"><a class="header" href="#常用估算函数-srcbackendutilsadtselfuncsc">常用估算函数 (<code>src/backend/utils/adt/selfuncs.c</code>)</a></h3>
+<ul>
+<li><code>eqsel</code>: 等值条件 (<code>=</code>) 的选择率。优先查 MCV，没有则用 <code>1 / n_distinct</code>。</li>
+<li><code>scalarltsel</code> / <code>scalargtsel</code>: 范围条件 (<code>&lt;</code>, <code>&gt;</code>) 的选择率。主要使用直方图。</li>
+<li><code>clauselist_selectivity</code>: 组合多个条件的选择率。假设列之间相互独立（Independence Assumption），通常是连乘 <code>P(A) * P(B)</code>。但 PG 也有扩展统计信息（Extended Statistics）来处理列相关性。</li>
+</ul>
+<h2 id="代价计算示例seq-scan"><a class="header" href="#代价计算示例seq-scan">代价计算示例：Seq Scan</a></h2>
+<p><code>Cost = (disk_pages * seq_page_cost) + (rows * cpu_tuple_cost) + (rows * filter_cost)</code></p>
+<ul>
+<li>优化器会先估算表的大小（pages）和行数（rows）。</li>
+<li>如果有过滤条件，还需要加上计算过滤表达式的 CPU 开销。</li>
+</ul>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="../phase1/outer_join_elimination.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="../util/pathkeys.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                             </a>
 
-                            <a rel="next prefetch" href="../core/pathkeys.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="../phase1/preprocess.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                             </a>
 
@@ -225,11 +233,11 @@
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="../phase1/outer_join_elimination.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="../util/pathkeys.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                     </a>
 
-                    <a rel="next prefetch" href="../core/pathkeys.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="../phase1/preprocess.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                     </a>
             </nav>

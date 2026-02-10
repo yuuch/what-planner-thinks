@@ -36,10 +36,10 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-c0d10b8c.js";
+            window.path_to_searchindex_js = "searchindex-8651b419.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-4b13ab09.js"></script>
+        <script src="toc-00ebddb9.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -283,113 +283,6 @@
 <li><strong>计划节点生成</strong>: <code>src/backend/optimizer/plan/createplan.c</code></li>
 </ul>
 <div style="break-before: page; page-break-before: always;"></div>
-<h1 id="查询树的预处理"><a class="header" href="#查询树的预处理">查询树的预处理</a></h1>
-<p>在 PostgreSQL 优化器接收到查询树（Query Tree）后，第一步并非直接开始路径搜索，而是进行一系列的预处理。这些预处理步骤旨在简化查询结构，消除不必要的复杂性，并为后续的逻辑优化和物理优化打下基础。</p>
-<h2 id="主要流程"><a class="header" href="#主要流程">主要流程</a></h2>
-<p>预处理主要发生在 <code>subquery_planner</code> 函数的早期阶段。</p>
-<ol>
-<li>
-<p><strong>常量折叠 (Constant Folding)</strong>:</p>
-<ul>
-<li>计算查询中可以预先确定的表达式。例如 <code>WHERE x = 1 + 2</code> 会被重写为 <code>WHERE x = 3</code>。</li>
-<li>利用 <code>eval_const_expressions</code> 函数完成。</li>
-</ul>
-</li>
-<li>
-<p><strong>表达式规范化</strong>:</p>
-<ul>
-<li>将表达式转换为规范形式（Canonical Form），例如将 <code>x + 1 = 5</code> 转换为 <code>x = 4</code>（如果支持），或者将布尔表达式进行标准化（CNF/DNF）。</li>
-<li>处理 <code>ANY</code> / <code>ALL</code> 子查询转换等。</li>
-</ul>
-</li>
-<li>
-<p><strong>视图展开</strong>:</p>
-<ul>
-<li>如果查询中引用了视图，重写器（Rewriter）阶段通常已经处理了规则（Rules），但在优化器阶段，可能通过 <code>pull_up_sublinks</code> 等进一步处理。</li>
-</ul>
-</li>
-<li>
-<p><strong>Qual 预处理</strong>:</p>
-<ul>
-<li>将 <code>WHERE</code> 子句和 <code>JOIN/ON</code> 子句中的条件转换为隐式的 AND 连接列表（List of Expr）。</li>
-<li>处理 <code>NOT</code> 表达式下推。</li>
-</ul>
-</li>
-</ol>
-<h2 id="源码入口"><a class="header" href="#源码入口">源码入口</a></h2>
-<ul>
-<li><code>src/backend/optimizer/plan/planner.c</code>: <code>standard_planner</code> -&gt; <code>subquery_planner</code></li>
-<li><code>src/backend/optimizer/plan/initsplan.c</code></li>
-</ul>
-<div style="break-before: page; page-break-before: always;"></div>
-<h1 id="子查询提升-subquery-pull-up"><a class="header" href="#子查询提升-subquery-pull-up">子查询提升 (Subquery Pull-up)</a></h1>
-<p>子查询提升（Subquery Pull-up）是 PostgreSQL 优化器中最重要的逻辑优化之一。它的主要目的是将子查询（Subquery）合并到父查询（Parent Query）中，从而将原本的层次化结构“扁平化”。</p>
-<h2 id="为什么要进行子查询提升"><a class="header" href="#为什么要进行子查询提升">为什么要进行子查询提升？</a></h2>
-<ol>
-<li><strong>增加连接顺序的选择空间</strong>: 如果保持子查询独立，优化器通常必须先优化子查询，再优化父查询，这限制了连接顺序（Join Order）。扁平化后，子查询中的表可以与父查询中的表自由结合，优化器可以探索更多的连接路径。</li>
-<li><strong>减少执行层级</strong>: 减少了执行器层面的函数调用和上下文切换开销。</li>
-</ol>
-<h2 id="哪些子查询可以被提升"><a class="header" href="#哪些子查询可以被提升">哪些子查询可以被提升？</a></h2>
-<p>主要处理 <code>FROM</code> 子句中的子查询（Subquery in FROM）。</p>
-<ol>
-<li>
-<p><strong>简单子查询 (Simple Subqueries)</strong>:</p>
-<ul>
-<li>不包含 <code>GROUP BY</code>, <code>HAVING</code>, <code>LIMIT</code>, <code>OFFSET</code>, <code>DISTINCT</code>, 集合操作（UNION/INTERSECT/EXCEPT）或窗口函数的子查询。</li>
-<li>这类子查询可以直接合并，将其 <code>WHERE</code> 条件 AND 到父查询中。</li>
-</ul>
-</li>
-<li>
-<p><strong>UNION ALL 子查询</strong>:</p>
-<ul>
-<li>可以将 <code>UNION ALL</code> 扁平化为 Append 关系（Append Relation）。</li>
-</ul>
-</li>
-</ol>
-<h2 id="特殊情况group-by-子查询的提升"><a class="header" href="#特殊情况group-by-子查询的提升">特殊情况：GROUP BY 子查询的提升</a></h2>
-<p>在某些特定条件下，包含 <code>GROUP BY</code> 的子查询也可以被提升，但这通常涉及到更复杂的转换，如 <strong>Aggregate Pushdown</strong> 或 <strong>Join Removal</strong>。PostgreSQL 支持将某些 Outer Join 中的 Group By 子查询提升，但需要保证 Join Key 是 Unique 的。</p>
-<h2 id="源码分析"><a class="header" href="#源码分析">源码分析</a></h2>
-<p>核心函数：<code>pull_up_subqueries</code> (位于 <code>src/backend/optimizer/prep/prepjointree.c</code>)</p>
-<p>该函数递归地遍历 Query Tree 的 <code>jointree</code>，查找 <code>RangeTblRef</code> 指向的子查询。如果满足提升条件，则修改 <code>jointree</code> 结构，将子查询的 <code>FromExpr</code> 合并上来。</p>
-<div style="break-before: page; page-break-before: always;"></div>
-<h1 id="外连接消除-outer-join-elimination"><a class="header" href="#外连接消除-outer-join-elimination">外连接消除 (Outer Join Elimination)</a></h1>
-<p>外连接消除（Outer Join Elimination）是指在不改变查询语义的前提下，将 Outer Join（Left/Right/Full Join）转换为 Inner Join，或者完全移除该 Join。</p>
-<h2 id="转换原理"><a class="header" href="#转换原理">转换原理</a></h2>
-<h3 id="1-outer-join-转换为-inner-join"><a class="header" href="#1-outer-join-转换为-inner-join">1. Outer Join 转换为 Inner Join</a></h3>
-<p>当 Outer Join 的“空值生成端”（Null-generating side）受到一个“严格”（Strict）的过滤条件限制时，Outer Join 等价于 Inner Join。</p>
-<ul>
-<li><strong>严格条件</strong>: 指当输入为 NULL 时，表达式结果为 NULL 或 False 的条件。例如 <code>WHERE t2.col &gt; 5</code>。</li>
-<li><strong>场景</strong>: <code>SELECT * FROM t1 LEFT JOIN t2 ON t1.id = t2.id WHERE t2.col &gt; 5;</code>
-<ul>
-<li>在 Left Join 中，如果 t2 匹配不上，<code>t2.col</code> 会是 NULL。</li>
-<li><code>NULL &gt; 5</code> 为 NULL（即 False）。</li>
-<li>因此，所有 t2 补 NULL 的行都会被 WHERE 过滤掉。</li>
-<li>查询等价于 <code>SELECT * FROM t1 JOIN t2 ...</code>。</li>
-</ul>
-</li>
-</ul>
-<p>转换的好处是 Inner Join 的连接顺序更灵活（可以交换左右表），而 Outer Join 的顺序通常是固定的。</p>
-<h3 id="2-join-移除-join-removal"><a class="header" href="#2-join-移除-join-removal">2. Join 移除 (Join Removal)</a></h3>
-<p>如果连接的结果没有被使用，且连接操作不影响行数（Cardinality），则可以移除 Join。</p>
-<ul>
-<li><strong>场景</strong>: <code>SELECT t1.x FROM t1 LEFT JOIN t2 ON t1.id = t2.id;</code>
-<ul>
-<li>如果我们只查询 <code>t1</code> 的列。</li>
-<li>且 <code>t2.id</code> 是唯一的（Unique），或者说 <code>t1.id</code> 参照 <code>t2.id</code> 的外键存在。</li>
-<li>Left Join 保证了 <code>t1</code> 的每一行至少出现一次。</li>
-<li>如果 <code>t2</code> 端匹配唯一，则 <code>t1</code> 的行不会膨胀。</li>
-<li>此时可以移除 <code>t2</code> 的连接。</li>
-</ul>
-</li>
-</ul>
-<h2 id="源码分析-1"><a class="header" href="#源码分析-1">源码分析</a></h2>
-<p>核心函数：<code>reduce_outer_joins</code> (位于 <code>src/backend/optimizer/prep/prepjointree.c</code>)</p>
-<p>该函数在 <code>subquery_planner</code> 早期被调用。它通过分析 <code>WHERE</code> 子句和 <code>JOIN/ON</code> 子句中的约束条件（Qualifiers），判断是否满足“严格性”要求。</p>
-<ul>
-<li><strong>Full Join</strong>: 可以先降级为 Left 或 Right，再进一步降级为 Inner。</li>
-<li><strong>Left Join</strong>: 如果右表（Nullable side）有强过滤条件，降级为 Inner。</li>
-</ul>
-<div style="break-before: page; page-break-before: always;"></div>
 <h1 id="等价类-equivalence-classes"><a class="header" href="#等价类-equivalence-classes">等价类 (Equivalence Classes)</a></h1>
 <p>等价类（Equivalence Class, EC）是 PostgreSQL 优化器中用于推导隐含约束条件的核心数据结构。它主要基于 SQL 中的 <code>WHERE</code> 或 <code>JOIN/ON</code> 子句中的等值条件（Equality Clauses）。</p>
 <h2 id="概念"><a class="header" href="#概念">概念</a></h2>
@@ -502,6 +395,113 @@
 <ul>
 <li>优化器会先估算表的大小（pages）和行数（rows）。</li>
 <li>如果有过滤条件，还需要加上计算过滤表达式的 CPU 开销。</li>
+</ul>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="查询树的预处理"><a class="header" href="#查询树的预处理">查询树的预处理</a></h1>
+<p>在 PostgreSQL 优化器接收到查询树（Query Tree）后，第一步并非直接开始路径搜索，而是进行一系列的预处理。这些预处理步骤旨在简化查询结构，消除不必要的复杂性，并为后续的逻辑优化和物理优化打下基础。</p>
+<h2 id="主要流程"><a class="header" href="#主要流程">主要流程</a></h2>
+<p>预处理主要发生在 <code>subquery_planner</code> 函数的早期阶段。</p>
+<ol>
+<li>
+<p><strong>常量折叠 (Constant Folding)</strong>:</p>
+<ul>
+<li>计算查询中可以预先确定的表达式。例如 <code>WHERE x = 1 + 2</code> 会被重写为 <code>WHERE x = 3</code>。</li>
+<li>利用 <code>eval_const_expressions</code> 函数完成。</li>
+</ul>
+</li>
+<li>
+<p><strong>表达式规范化</strong>:</p>
+<ul>
+<li>将表达式转换为规范形式（Canonical Form），例如将 <code>x + 1 = 5</code> 转换为 <code>x = 4</code>（如果支持），或者将布尔表达式进行标准化（CNF/DNF）。</li>
+<li>处理 <code>ANY</code> / <code>ALL</code> 子查询转换等。</li>
+</ul>
+</li>
+<li>
+<p><strong>视图展开</strong>:</p>
+<ul>
+<li>如果查询中引用了视图，重写器（Rewriter）阶段通常已经处理了规则（Rules），但在优化器阶段，可能通过 <code>pull_up_sublinks</code> 等进一步处理。</li>
+</ul>
+</li>
+<li>
+<p><strong>Qual 预处理</strong>:</p>
+<ul>
+<li>将 <code>WHERE</code> 子句和 <code>JOIN/ON</code> 子句中的条件转换为隐式的 AND 连接列表（List of Expr）。</li>
+<li>处理 <code>NOT</code> 表达式下推。</li>
+</ul>
+</li>
+</ol>
+<h2 id="源码入口"><a class="header" href="#源码入口">源码入口</a></h2>
+<ul>
+<li><code>src/backend/optimizer/plan/planner.c</code>: <code>standard_planner</code> -&gt; <code>subquery_planner</code></li>
+<li><code>src/backend/optimizer/plan/initsplan.c</code></li>
+</ul>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="子查询提升-subquery-pull-up"><a class="header" href="#子查询提升-subquery-pull-up">子查询提升 (Subquery Pull-up)</a></h1>
+<p>子查询提升（Subquery Pull-up）是 PostgreSQL 优化器中最重要的逻辑优化之一。它的主要目的是将子查询（Subquery）合并到父查询（Parent Query）中，从而将原本的层次化结构“扁平化”。</p>
+<h2 id="为什么要进行子查询提升"><a class="header" href="#为什么要进行子查询提升">为什么要进行子查询提升？</a></h2>
+<ol>
+<li><strong>增加连接顺序的选择空间</strong>: 如果保持子查询独立，优化器通常必须先优化子查询，再优化父查询，这限制了连接顺序（Join Order）。扁平化后，子查询中的表可以与父查询中的表自由结合，优化器可以探索更多的连接路径。</li>
+<li><strong>减少执行层级</strong>: 减少了执行器层面的函数调用和上下文切换开销。</li>
+</ol>
+<h2 id="哪些子查询可以被提升"><a class="header" href="#哪些子查询可以被提升">哪些子查询可以被提升？</a></h2>
+<p>主要处理 <code>FROM</code> 子句中的子查询（Subquery in FROM）。</p>
+<ol>
+<li>
+<p><strong>简单子查询 (Simple Subqueries)</strong>:</p>
+<ul>
+<li>不包含 <code>GROUP BY</code>, <code>HAVING</code>, <code>LIMIT</code>, <code>OFFSET</code>, <code>DISTINCT</code>, 集合操作（UNION/INTERSECT/EXCEPT）或窗口函数的子查询。</li>
+<li>这类子查询可以直接合并，将其 <code>WHERE</code> 条件 AND 到父查询中。</li>
+</ul>
+</li>
+<li>
+<p><strong>UNION ALL 子查询</strong>:</p>
+<ul>
+<li>可以将 <code>UNION ALL</code> 扁平化为 Append 关系（Append Relation）。</li>
+</ul>
+</li>
+</ol>
+<h2 id="特殊情况group-by-子查询的提升"><a class="header" href="#特殊情况group-by-子查询的提升">特殊情况：GROUP BY 子查询的提升</a></h2>
+<p>在某些特定条件下，包含 <code>GROUP BY</code> 的子查询也可以被提升，但这通常涉及到更复杂的转换，如 <strong>Aggregate Pushdown</strong> 或 <strong>Join Removal</strong>。PostgreSQL 支持将某些 Outer Join 中的 Group By 子查询提升，但需要保证 Join Key 是 Unique 的。</p>
+<h2 id="源码分析"><a class="header" href="#源码分析">源码分析</a></h2>
+<p>核心函数：<code>pull_up_subqueries</code> (位于 <code>src/backend/optimizer/prep/prepjointree.c</code>)</p>
+<p>该函数递归地遍历 Query Tree 的 <code>jointree</code>，查找 <code>RangeTblRef</code> 指向的子查询。如果满足提升条件，则修改 <code>jointree</code> 结构，将子查询的 <code>FromExpr</code> 合并上来。</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="外连接消除-outer-join-elimination"><a class="header" href="#外连接消除-outer-join-elimination">外连接消除 (Outer Join Elimination)</a></h1>
+<p>外连接消除（Outer Join Elimination）是指在不改变查询语义的前提下，将 Outer Join（Left/Right/Full Join）转换为 Inner Join，或者完全移除该 Join。</p>
+<h2 id="转换原理"><a class="header" href="#转换原理">转换原理</a></h2>
+<h3 id="1-outer-join-转换为-inner-join"><a class="header" href="#1-outer-join-转换为-inner-join">1. Outer Join 转换为 Inner Join</a></h3>
+<p>当 Outer Join 的“空值生成端”（Null-generating side）受到一个“严格”（Strict）的过滤条件限制时，Outer Join 等价于 Inner Join。</p>
+<ul>
+<li><strong>严格条件</strong>: 指当输入为 NULL 时，表达式结果为 NULL 或 False 的条件。例如 <code>WHERE t2.col &gt; 5</code>。</li>
+<li><strong>场景</strong>: <code>SELECT * FROM t1 LEFT JOIN t2 ON t1.id = t2.id WHERE t2.col &gt; 5;</code>
+<ul>
+<li>在 Left Join 中，如果 t2 匹配不上，<code>t2.col</code> 会是 NULL。</li>
+<li><code>NULL &gt; 5</code> 为 NULL（即 False）。</li>
+<li>因此，所有 t2 补 NULL 的行都会被 WHERE 过滤掉。</li>
+<li>查询等价于 <code>SELECT * FROM t1 JOIN t2 ...</code>。</li>
+</ul>
+</li>
+</ul>
+<p>转换的好处是 Inner Join 的连接顺序更灵活（可以交换左右表），而 Outer Join 的顺序通常是固定的。</p>
+<h3 id="2-join-移除-join-removal"><a class="header" href="#2-join-移除-join-removal">2. Join 移除 (Join Removal)</a></h3>
+<p>如果连接的结果没有被使用，且连接操作不影响行数（Cardinality），则可以移除 Join。</p>
+<ul>
+<li><strong>场景</strong>: <code>SELECT t1.x FROM t1 LEFT JOIN t2 ON t1.id = t2.id;</code>
+<ul>
+<li>如果我们只查询 <code>t1</code> 的列。</li>
+<li>且 <code>t2.id</code> 是唯一的（Unique），或者说 <code>t1.id</code> 参照 <code>t2.id</code> 的外键存在。</li>
+<li>Left Join 保证了 <code>t1</code> 的每一行至少出现一次。</li>
+<li>如果 <code>t2</code> 端匹配唯一，则 <code>t1</code> 的行不会膨胀。</li>
+<li>此时可以移除 <code>t2</code> 的连接。</li>
+</ul>
+</li>
+</ul>
+<h2 id="源码分析-1"><a class="header" href="#源码分析-1">源码分析</a></h2>
+<p>核心函数：<code>reduce_outer_joins</code> (位于 <code>src/backend/optimizer/prep/prepjointree.c</code>)</p>
+<p>该函数在 <code>subquery_planner</code> 早期被调用。它通过分析 <code>WHERE</code> 子句和 <code>JOIN/ON</code> 子句中的约束条件（Qualifiers），判断是否满足“严格性”要求。</p>
+<ul>
+<li><strong>Full Join</strong>: 可以先降级为 Left 或 Right，再进一步降级为 Inner。</li>
+<li><strong>Left Join</strong>: 如果右表（Nullable side）有强过滤条件，降级为 Inner。</li>
 </ul>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="单表扫描路径生成-access-paths"><a class="header" href="#单表扫描路径生成-access-paths">单表扫描路径生成 (Access Paths)</a></h1>
