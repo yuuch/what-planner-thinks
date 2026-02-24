@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-803d5e0b.js";
+            window.path_to_searchindex_js = "../searchindex-d878a88c.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-55afa917.js"></script>
@@ -174,58 +174,53 @@
 
                 <div id="mdbook-content" class="content">
                     <main>
-                        <h1 id="遗传查询算法优化器-geqo-genetic-query-optimizer"><a class="header" href="#遗传查询算法优化器-geqo-genetic-query-optimizer">遗传查询算法优化器 (GEQO, Genetic Query Optimizer)</a></h1>
-<p>在前一章中，我们详细解析了 PostgreSQL 的骄傲——自底向上的动态规划（Dynamic Programming, DP）机制。DP 能在极度复杂的关系里寻找出理论上的绝对最优执行序列。</p>
-<p>但天下没有免费的午餐，即便是应用了 <code>join_collapse_limit</code> 等启发式参数进行搜索边界裁剪，DP 寻找最优路径的算法复杂度依旧是随基表数量呈 $O(3^N)$ 乃至更糟的指数级膨胀的。
-当你的一个极其庞大的数仓或分析型报表视图涉及到数十个表（默认参数 <code>geqo_threshold = 12</code> 甚至更多）互相 Join 时，如果坚持让数据库去穷举动态规划排列组合，<strong>优化器规划一条 SQL 的时间可能会比直接全表扫一遍执行出来的总时间还长成百上千倍。</strong></p>
-<p>这就是 <strong>GEQO (Genetic Query Optimizer)</strong> 挺身而出的时刻。</p>
-<p>PostgreSQL 在 <code>src/backend/optimizer/geqo/</code> 目录下植入了一个完备的基因进化算法器。它的目的并不是给你最完美的解答，而是在你可以接受的几十毫秒时间内，抛弃遍历思想，直接给你一个**“虽然可能不是全局最顶尖，但绝对足够好”的近似优解**。</p>
+                        <h1 id="遗传启发算法-geqo-genetic-query-optimizer"><a class="header" href="#遗传启发算法-geqo-genetic-query-optimizer">遗传启发算法 (GEQO, Genetic Query Optimizer)</a></h1>
+<p>在前一章中，我们深度领略了 PostgreSQL 自底向上的动态规划（Dynamic Programming, DP）算法。这套精密至极的机制，誓要在错综复杂的表网中抠出一条理论上绝对完美的执行路线。</p>
+<p>但这套机制并不是无底洞。即便是启用了启发式剪枝，DP 枚举排列的开销同样也会呈现不可阻挡的指数级大爆炸。倘若你在超大型数仓的复杂视图里牵连了上十几二十张表（超越 <code>geqo_threshold</code> 默认值 12 的警戒线），如果非要强摁着 DP 去穷举到底。那么可能到最后，<strong>光是把“计划算出来”所花死等的时间，就足以超过去硬表硬扫实际跑完总时间的好几百倍！</strong></p>
+<p>这时候，就轮到 <strong>GEQO (Genetic Query Optimizer 遗传式查询优化器)</strong> 挺身而出了。
+它不指望算出绝对最佳组合，但它笃定向你保证，在仅需区区几十毫秒推演里，利用生物演化的力量，就能给你端上来一道**“未必天下第一，但也绝对堪用之上乘”的退求其次解法**。</p>
 <hr>
-<h2 id="1-概念隐喻sql-优化如何转变为旅行商问题-tsp"><a class="header" href="#1-概念隐喻sql-优化如何转变为旅行商问题-tsp">1. 概念隐喻：SQL 优化如何转变为旅行商问题 (TSP)</a></h2>
-<p>生物演化与遗传算法的核心在于将现实问题编码成“染色体结构”。</p>
-<p>在 GEQO 视角下，寻找多个表的连接排序，实质上相当于组合优化领域最著名的 NP-Hard 难题——<strong>旅行商问题 (Traveling Salesman Problem, TSP)</strong>。</p>
+<h2 id="1-隐喻对账sql-乱炖化身旅行商难题-tsp"><a class="header" href="#1-隐喻对账sql-乱炖化身旅行商难题-tsp">1. 隐喻对账：SQL 乱炖化身旅行商难题 (TSP)</a></h2>
+<p>遗传演化的关键，就在于如何把问题重新包装成“染色体”结构变种。
+在 GEQO 视角下，多张大表的连接顺序争杀其实就是在重演全球最火爆的 NP 级数学难题——<strong>旅行商问题 (Traveling Salesman Problem, TSP)</strong>。</p>
 <ul>
-<li><strong>城市 (City)</strong> = 基础表（Base Relation）。</li>
-<li><strong>路线 (Tour)</strong> = 表之间拼合的连接顺序（Join Order），比如这是一条路径：$A \to C \to B \to D$。</li>
-<li><strong>路费 (Path Cost)</strong> = 当前路线上跑出来的连接计划的总代价值（Total Cost），也就是执行器要付出多少资源来跑这条排好序的执行计划。</li>
+<li><strong>城池</strong> = 待匹配的基础表（Base Relation）。</li>
+<li><strong>车道 (Tour)</strong> = 表之间连接的先后序列组，例如 $A \to C \to B \to D$。</li>
+<li><strong>盘缠开销 (Path Cost)</strong> = 顺着这条方案往下跑，底层执行器所需的代价（Total Cost）账单。</li>
 </ul>
-<p>由于 GEQO 的本意是简化复杂度，目前 PG 源码里限制了 <strong>GEQO 只在 Left-deep 树空间内进行染色体编码搜索</strong>（这也是 TSP 问题的一个自然映射方式——从一个点出发一条路走到底），放弃了复杂的 Bushy 多路聚合基因组建模。</p>
+<p>在 PG 的源码限定下，GEQO 系统被剥夺了探界繁杂无比的多路 Bushy 树魔阵的野心，只能踏实地在传统的 Left-deep 树（一条道走黑、线性联营序列）这方小天地内推演染色体排谱。</p>
 <hr>
-<h2 id="2-geqo-的整体运转循环"><a class="header" href="#2-geqo-的整体运转循环">2. GEQO 的整体运转循环</a></h2>
-<p>遗传算法是一个基于达尔文“优胜劣汰、适者生存”理论的高度迭代模型。它的全局调用入口在 <code>geqo_main()</code> 这个函数里。</p>
-<p>整个 GEQO 宇宙的创世与演进包含了以下五个神圣阶段：</p>
-<h3 id="21-种群初始化-initialization"><a class="header" href="#21-种群初始化-initialization">2.1 种群初始化 (Initialization)</a></h3>
-<p>上帝说要有光，程序里调用了 <code>random_init_pool()</code>。
-优化器会从所有可能的表排列组合中，直接按白噪音一般的<strong>随机排列</strong>，生成初始的若干个路线配置组合（由于基表数量决定了基因变异的跨度，此时的初始种群数量 Pool Size 会通过内置公式基于 N 自适应地扩张。N 越大，池子越大，默认最多会产生数百个个体）。</p>
-<h3 id="22-适应度评估-fitness-evaluation"><a class="header" href="#22-适应度评估-fitness-evaluation">2.2 适应度评估 (Fitness Evaluation)</a></h3>
-<p>这是一个“照妖镜”环节，入口在 <code>geqo_eval()</code>。
-对于 Pool 里的每一个个体（排好序的一串表名集合，例如 $A, B, C, D$），GEQO 不会自己凭空算盘，而是非常讨巧地去<strong>白嫖传统优化器的代价计算引擎</strong>！
-它会按这个顺序去强行构建一个完整的 Join Tree，交给 <code>cost_qual_eval</code> 等底座函数计算一遍，拿到诸如需要 <code>3450.25</code> 的硬性数字指标，然后把它映射为个体在这个种群中生存下去的<strong>适应度 (Fitness)</strong>。Fitness 越低越好（因为 Cost 越低越快）。</p>
-<p>然后，所有染色体由于它们不同的“强壮度”会被打分，并调用 <code>gimme_pool_size()</code> 在数组里面<strong>按优劣直接排好队（Ranking）</strong>。最上面的一定是最强壮的，最底下的随时要被淘汰。</p>
-<h3 id="23-选择-selection-权重的马太效应"><a class="header" href="#23-选择-selection-权重的马太效应">2.3 选择 (Selection) 权重的马太效应</a></h3>
-<p>遗传的法则是：越是强者，留下子嗣的概率越高。
-当系统进入繁殖轮次时，会随机挑选两个个体作为<strong>父母 (Parents)</strong>。如何保证强者恒强但又保留穷人的翻盘几率？
-在源文件 <code>geqo_selection.c</code> 中，PG 采用了一种叫做 <strong>基于排名的线性选择法 (Linear Ranking Selection)</strong>。排名越靠前（Fitness 好的代价值低的个体），抽中作为父母的概率基数越高，但底下的哪怕是最次的依然有一丝微弱概率被点兵中选。</p>
-<h3 id="24-交叉受孕-crossover--breeding"><a class="header" href="#24-交叉受孕-crossover--breeding">2.4 交叉/受孕 (Crossover / Breeding)</a></h3>
-<p>最核能的部分来了，由于 TSP 序列必须是表名的无重复混洗（不能出现 $A,B,A,C$ 这种畸形路线），PG 在几十年前选用了一种学术界公认最为精密巧妙的乱交算法：<strong>边缘重组交叉算子 (Edge Recombination Crossover, ERX)</strong>。
-调用在 <code>geqo_erx.c</code> 中的 <code>gimme_edge_table()</code> 及其核心调度里。</p>
-<p>这个奇妙算法能极大地<strong>保留父母代“连接对”的基因</strong>。例如，爸爸有 A-&gt;C，妈妈也有 C-&gt;A，既然 C 一直缠着 A 不放，那说明虽然你们俩路径别的不管，但 A 相邻着连接 C 必定是个极其有缘的优良基因！在产下全新子代（Child）时，子代码会主动向周边有交集的游离基因靠拢并生成出 $A \to C$。这是打破常规遗传算法断点交叉的最强防线，非常贴合 Joint 树“关联近邻更好”的特征。</p>
-<h3 id="25-变异-mutation-为了防止内卷"><a class="header" href="#25-变异-mutation-为了防止内卷">2.5 变异 (Mutation) 为了防止内卷</a></h3>
-<p>如果在好几百个代的推演里，大家只生娃，整个群体的基因很容易陷入<strong>局部最优解 (Local Minima)</strong>（大家都变成了一种相近的排列，怎么交叉还是生出那个德性的路线），从而彻底停止了对更优路径的探索。
-PG 设计了 <code>geqo_mutation()</code> 函数，给每一个新产下的个体植入一点点叛逆的随机数。它会以微小的概念发生染色体调换，比如让里面的第 3 个表和第 5 个表突然对调一下顺序。这就强行引入了野生的新特性，使得搜索图能够跳出局部坑洼。</p>
+<h2 id="2-geqo-的全局生物演化钟"><a class="header" href="#2-geqo-的全局生物演化钟">2. GEQO 的全局生物演化钟</a></h2>
+<p>这套基因游戏全赖 <code>geqo_main()</code> 发条手拨转。整个轮盘涵盖下面这五段宛若天神造物的创世纪流程：</p>
+<h3 id="21-鸿蒙初辟种群大爆发-initialization"><a class="header" href="#21-鸿蒙初辟种群大爆发-initialization">2.1 鸿蒙初辟：种群大爆发 (Initialization)</a></h3>
+<p>造物之初唤起 <code>random_init_pool()</code>。
+系统直接按掷骰子般的随机序列排列组合法，粗暴地先抓出一把“先头部队”路线放入初始池（Pool）！基表数量 N 越多，这繁衍大池子也会基于特定的公式膨大激增，产生数百只怪胎个体。</p>
+<h3 id="22-阎王判官生存力测算-fitness-evaluation"><a class="header" href="#22-阎王判官生存力测算-fitness-evaluation">2.2 阎王判官：生存力测算 (Fitness Evaluation)</a></h3>
+<p>残酷的试金石主掌在 <code>geqo_eval()</code> 之手。
+对池子里的每一个孤单小串串（比如排序集合 $A, B, C, D$），GEQO 自己压根都懒得推敲。它极其讨巧地跑去<strong>白嫖那个 DP 正规军手头的传统算账代价引擎（Cost Engine）！</strong>
+它硬逼着别人把这次序捏成完工的 Join Tree，塞给 <code>cost_qual_eval</code> 底座让它死命算。算完拿到一个生冷的代价值，倒转印刻为自己在这个大池里能不能存活的资本——<strong>适应度 (Fitness)</strong>。</p>
+<p>而后它大手一挥，无情调用 <code>gimme_pool_size()</code> 将这一水箱的所有人马依据分数<strong>排高低搞大榜单 (Ranking)</strong>。占据榜单制高点那几个就是战力最猛的，在底端垫底的随时面临斩草除根之命。</p>
+<h3 id="23-天选提拔-selection"><a class="header" href="#23-天选提拔-selection">2.3 天选提拔 (Selection)</a></h3>
+<p>基因界里越是彪悍，那必定得狂撒种子。为了不彻底垄断，它用上了坐落于 <code>geqo_selection.c</code> 大殿里的 <strong>基于排名的线性择优术 (Linear Ranking Selection)</strong>。
+排名极其靠前的（消耗越少的）个体，其作为准双亲被钦点繁衍大业的基率极高；不过即便你是底端垫底的，依旧存留微小的配种率以防止大池基因僵死。</p>
+<h3 id="24-最核弹魔力交叉互融-crossover--erx"><a class="header" href="#24-最核弹魔力交叉互融-crossover--erx">2.4 最核弹魔力交叉互融 (Crossover / ERX)</a></h3>
+<p>PG 在远古大作 <code>geqo_erx.c</code> 选定了一个最高绝阵法：<strong>边缘重组交叉算子 (Edge Recombination Crossover, ERX)</strong>。
+这玄学法术能够极其贪心保留了那一代代遗传下来的“连襟死党邻座对”。比如当爹的那里有 <code>A-&gt;C</code>，当娘的恰好也有 <code>C-&gt;A</code>！说明这对死基友有着天生优良联系。到了小下一代，子程序就会疯狂向这些游离周边基因靠拢，死死保留住新子代的绝强捆绑落段。完美吻合联接树“相邻结合最好”的物理特征。</p>
+<h3 id="25-为了不死循环的叛逆突变-mutation"><a class="header" href="#25-为了不死循环的叛逆突变-mutation">2.5 为了不死循环的叛逆突变 (Mutation)</a></h3>
+<p>要是成百代的人只死盯交配繁衍不加变化，全群早晚会在一个名为 <strong>局域极值耗死 (Local Minima)</strong> 的巨坑里憋死（大家长得一模一样，再也配不出更佳的优形种）。
+在此 <code>geqo_mutation()</code> 给每个新下的瓜注入疯血乱性小药剂。通过扔极个别的乱骰数，强行将新生一代里的第三和第五位成员硬做一次对调置换叛乱，强行注入野生新息，推拉进化车轮脱离局限烂泥。</p>
 <hr>
-<h2 id="3-收敛与局限性双刃剑的利与弊"><a class="header" href="#3-收敛与局限性双刃剑的利与弊">3. 收敛与局限性：双刃剑的利与弊</a></h2>
-<p>经过由配置参数 <code>geqo_effort</code>（从 1 到 10 级）控制的上百代种群疯狂繁衍以后，系统强行叫停。整个上帝视角的演化场里，站在 Pool 存活最顶端的排在第 0 顺位的那个最强个体，就会被强行抽取出来。
-PG 就拿着这个通过概率、玄学以及漫长时间线压缩计算得到的最后序列，拍板定夺：“我们下一跳就按照这个 Join 计划去运行吧！”</p>
-<h3 id="副作用与建议每次看-explain-计划都在跳舞"><a class="header" href="#副作用与建议每次看-explain-计划都在跳舞">副作用与建议：每次看 Explain 计划都在跳舞？</a></h3>
-<p>如果你真的在超过 12 张表上尝试复杂的 BI 报表级 JOIN，你会面临一个非常神奇且让你 DB 图谱工程师血压升高的现象：</p>
-<p><strong>既然遗传算法本身是带有伪随机特性起手的，并且随机算子始终交织在繁衍树中，那么同一个复杂的查询，在第一次跑出和第二次跑出的时候，哪怕整个世界的数据都不曾变动，它最终选出来的解释计划（Explain Plan）竟然很有可能是大相径庭的！</strong> 这也就意味着查询响应时间会出现偶尔长偶尔短的神奇心跳图。</p>
-<p>为了解决调试麻烦，如果你确实希望在复杂图景里获得极其稳定的执行规划树：</p>
+<h2 id="3-玄学终局的苦果因果命数"><a class="header" href="#3-玄学终局的苦果因果命数">3. 玄学终局的苦果：因果命数</a></h2>
+<p>当历经了 <code>geqo_effort</code> 参数控制指令下的足足成百代疯狂更迭发酵之后，主神降临强硬鸣金喊停。淘沙剩下来的最终池子里，傲然屹立爬到全团顶尖排位座次第零位的最彪悍极品，会被如神选般抽将出来。
+规划器：“天命难违，弟兄们下海吧，我们就干这票 Join 图形了！”</p>
+<h3 id="被副作用反噬让人心脏骤停的善变计划"><a class="header" href="#被副作用反噬让人心脏骤停的善变计划">被副作用反噬：让人心脏骤停的善变计划</a></h3>
+<p>要是你真的在十来张超巨大核心表里放肆享受了大杂烩拉联操作，你势必迎来一场灵异戏剧：
+既然这套遗传玄学打从始至终就带有极大运气伪随机脾性，这不就代表着即便是同样一模一样的惊天 SQL。早上拿出的跑位路线，和下午拿出来的最终底盘执行解析解释图表（Explain Plan），<strong>两者竟然很有可能是长得鸡飞狗跳、完全大相径庭的两棵截然不同狂树！</strong> 查询响应时间会出现长短不一的玄学心跳图。</p>
+<p>你要是深受这玄学波动困扰，想要绝对稳定执行期这稳坐钓鱼台的话：</p>
 <ol>
-<li>可以考虑去修改当前会话里的 <code>geqo_seed</code>（遗传随机种子），把它定死为一个小数，使得同一个版本内的搜索具备唯一重演性。</li>
-<li>如果不差几百毫秒准备时间或者用的是极高性能规划服务器，甚至可以通过设置 <code>SET geqo = off</code> 强行禁用掉遗传算法引擎，或者极度调大 <code>geqo_threshold</code> 强逼底层执行标准的 DP 爆破扫描。</li>
+<li>请干脆把该连的 <code>geqo_seed</code> (所谓的演变乱斗随机种子主值) 定死为一个你熟悉永远不动的固化常数值去打保底复现重演锁定死。</li>
+<li>要是你有着多的大运存时间也不计较前期图纸计算耗时，干脆强杀 <code>SET geqo = off</code> 去锁死其运作，也就是放极大化那个 <code>geqo_threshold</code> 去活活让老底儿动态计算老黄牛去强推平所有的动态阵列！</li>
 </ol>
-<p>在这个庞大犹如钟表机械般细致刻度的规划器深渊里，无论动态规划如同地毯式轰炸般的精准，抑或是在极端条件下遗传算法的退缩防御妥协，都展示出了 PostgreSQL 对数学之美在应用工程中调和最强悍的一面。</p>
 
                     </main>
 

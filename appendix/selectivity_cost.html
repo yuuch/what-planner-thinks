@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-803d5e0b.js";
+            window.path_to_searchindex_js = "../searchindex-d878a88c.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-55afa917.js"></script>
@@ -176,85 +176,83 @@
                     <main>
                         <h1 id="选择率与代价引擎的数学基座-selectivity--cost-model"><a class="header" href="#选择率与代价引擎的数学基座-selectivity--cost-model">选择率与代价引擎的数学基座 (Selectivity &amp; Cost Model)</a></h1>
 <p>如果说执行器节点 (Executor Nodes) 是在战场上冲锋陷阵的铁血部队，那么 PostgreSQL 核心的 <strong>代价基调引擎 (Cost-Based Optimizer, CBO)</strong> 就是在这之前于作战统帅部里进行图上千百次沙盘推演的灵魂中枢。
-它一切的评估、一切生杀予夺的最终衡量指北，全部依托于两个底层基石机制：<strong>选择率预估 (Selectivity)</strong> 猜测系统会返回多少行数据，以及 <strong>代价计量 (Cost Model)</strong> 折算出这批数据在磁盘和内存中将会耗费多少系统滴答。</p>
-<p>在 PG 18.1 中，这套左右引擎命脉的公式算法与核心常数，沉睡于 <code>src/backend/optimizer/path/costsize.c</code> 与 <code>src/backend/utils/adt/selfuncs.c</code> 等文件中。
-本文将穿越表象，带领你深入这个堪称统计学与经验法相互融合的魔幻数学枢纽域。</p>
+它一切的生杀予夺衡量指北，全部依托于两个底层基石机制：<strong>选择率预估 (Selectivity)</strong> 猜测系统会返回多少行数据，以及 <strong>代价计量 (Cost Model)</strong> 折算出这批数据在磁盘和内存中将会耗费多少系统滴答。</p>
+<p>在 PG 18.1 中，这套左右引擎命脉的公式算法与核心常数，沉睡于 <code>src/backend/optimizer/path/costsize.c</code> 与 <code>src/backend/utils/adt/selfuncs.c</code>。
+本文将穿越表象，带你深入这个堪称统计学与经验法相互融合的魔幻中枢。</p>
 <hr>
 <h2 id="1-统计学透视选择率-selectivity-的精准测写"><a class="header" href="#1-统计学透视选择率-selectivity-的精准测写">1. 统计学透视：选择率 (Selectivity) 的精准测写</a></h2>
-<p>所谓 Selectivity (简写为 sel)，是一个介于 <code>0.0</code> 到 <code>1.0</code> 之间的浮点数，它表示某一个过滤条件 (Qual) 有多大的“卡口率”，能够允许整张表百分之多少的记录透射过去。
+<p>所谓 Selectivity (简写为 sel)，是一个介于 <code>0.0</code> 到 <code>1.0</code> 之间的浮点数，它表示绝命的“卡口率”，允许全表百分之多少记录透射过去。
 计算 <code>sel</code> 的一切前提，都基建于 <code>ANALYZE</code> 命令收集并写入到 <code>pg_statistic</code> 表中的系统元数据。</p>
 <h3 id="11-单列特征mcv-与直方图的双峰分布"><a class="header" href="#11-单列特征mcv-与直方图的双峰分布">1.1 单列特征：MCV 与直方图的双峰分布</a></h3>
-<p>如果数据都是均匀分布的，那数据库根本不需要复杂的收集机制。但现实世界中，业务库里的数据通常符合长尾和聚集极化（如某平台大多数用户注册年龄是25岁左右，但夹杂了一堆 18 和 50岁的稀缺词点）。
-在代码 <code>selfuncs.c</code> 里处理操作符如 <code>col = 'A'</code> 时：</p>
+<p>现实世界业务库的数据通常符合长尾和聚集极化（如某平台大多数用户年龄 25 左右，夹杂极少的 18 和 50）。
+在 <code>selfuncs.c</code> 里处理操作符如 <code>col = 'A'</code> 时：</p>
 <ul>
-<li>首先系统会查验目标列的 <strong>MCV (Most Common Values) 高频词表</strong>数组。如果查到 <code>'A'</code> 就在高频数组里，它会直接精准地抽出记录好的频率（可能占 32%）作为 <code>sel</code>。</li>
-<li>如果是 <code>col &gt; 100</code> 这样的带域检索，MCV 就捉襟见肘了。这时系统转而启用 <strong>Histogram Bounds (直方图切面界限)</strong>。PG 将排序好的表数据强行切分为数百个均等记录数的“桶 (Bucket)”。通过线性插值法探测 <code>100</code> 横跨了几个桶，计算其面积积分来得出精确 <code>sel</code> 预估值。</li>
-<li>最后还要叠加一个 <code>Null Fraction (空值率)</code>，直接把所有 NULL 的占比扣掉作为基础衰退系数。</li>
+<li>系统首先去查目标列的 <strong>MCV (Most Common Values) 高频词表</strong>数组。如果查到 <code>'A'</code> 就在此处，会直接精准地抽出记录好的频率（可能占 32%）作为 <code>sel</code>。</li>
+<li>如果是 <code>col &gt; 100</code> 这样的带域检索，MCV 就捉襟见肘了。系统转而启用 <strong>Histogram Bounds (直方图切面界限)</strong>。PG 将排序好的表数据强行切分为数百个均等记录数的“桶 (Bucket)”。通过线性插值法探测 <code>100</code> 横跨了几个桶，积分计算精确 <code>sel</code>。</li>
+<li>最后还要叠加一个 <code>Null Fraction (空值率)</code>，直接扣掉 NULL 的占比作为基础衰减。</li>
 </ul>
 <h3 id="12-维度的灾难与破局扩展统计信息-extended-statistics"><a class="header" href="#12-维度的灾难与破局扩展统计信息-extended-statistics">1.2 维度的灾难与破局：扩展统计信息 (Extended Statistics)</a></h3>
-<p>这是许多老旧数据库最遭人诟病的盲区，在代码侧集中于 <code>clauselist_selectivity()</code> 的连乘缺陷。
-如果用户写了 <code>WHERE city = 'Beijing' AND country = 'China'</code>。传统的概率计算遵循<strong>特征独立假设定理</strong>，也就是默认这两个条件的出现是不相关的。
-假设系统查表得知：<code>city='Beijing'</code> 的 <code>sel = 0.05</code>，而 <code>country='China'</code> 的 <code>sel = 0.2</code>。
-如果引擎采用朴素的 <code>sel_total = 0.05 * 0.2 = 0.01</code> 的瞎乘算法，就会得出极其扭曲的结果，认为双重匹配的数据极小，以至于被诱导去选出 NestLoop Join 这种极其错误孱弱的计划分支。殊不知，现实中凡是北京的由于地域从属必定全都是中国领地这二者拥有强绑定聚集概率！</p>
-<p>为了挽救这种维度塌缩，PostgreSQL 引入了跨列的 <code>CREATE STATISTICS</code> 模块进行救场。当你为 <code>(city, country)</code> 建立扩展高维相关性依赖 (Dependencies) 或多维 MCV 组后。系统就会在多条件连乘之前判定这俩词的联动特征相关系数值；打破“相互独立”的连相乘魔咒，挽救整个底层评估树的坍塌偏斜。</p>
+<p>在代码侧集中于 <code>clauselist_selectivity()</code> 的连乘会带来缺陷盲区。
+比如用户写 <code>WHERE city = 'Beijing' AND country = 'China'</code>。传统的概率计算遵循<strong>特征独立假设</strong>，默认这两个条件不相关。
+查表得知：<code>city='Beijing'</code> 的 <code>sel = 0.05</code>，而 <code>country='China'</code> 的 <code>sel = 0.2</code>。
+如果引擎采用朴素的 <code>sel_total = 0.05 * 0.2 = 0.01</code> 瞎乘算法，就会得出极其扭曲的结果，以至于被诱导选出孱弱错误计划分支。殊不知北京必定属于中国这二者拥有强绑定聚集概率！</p>
+<p>为了挽救这种维度塌缩，PostgreSQL 引入了跨列的 <code>CREATE STATISTICS</code> 模块救场。当你为 <code>(city, country)</code> 建立扩展高维相关性依赖 (Dependencies) 后。系统就会在连乘前判定联动关联，打破“相互独立”的连乘魔咒，挽救底层评估树的坍塌偏斜。</p>
 <hr>
 <h2 id="2-代价模型-cost-model-的双轨评议机制"><a class="header" href="#2-代价模型-cost-model-的双轨评议机制">2. 代价模型 (Cost Model) 的双轨评议机制</a></h2>
-<p>如果你查看过 <code>EXPLAIN</code> 输出的括号第一手信息，永远会面对类似 <code>cost=10.00..1050.25</code> 这两个用下划线相连接的神奇数值。
-这代表着优化器世界里一套极其严苛细分的基于双轨维度的总账计算法：<strong>启动代价 (Startup Cost) 与 总代价 (Total Cost)</strong>。</p>
+<p>如果你查看 <code>EXPLAIN</code> 输出，永远会面对类似 <code>cost=10.00..1050.25</code> 两个用下划线相连接的神奇数值。
+这代表着优化器世界基于双轨维度的账面计算法：<strong>启动代价 (Startup Cost) 与 总代价 (Total Cost)</strong>。</p>
 <h3 id="21-平行维度的角力"><a class="header" href="#21-平行维度的角力">2.1 平行维度的角力</a></h3>
-<p>由于数据库被不同特征的长短命连接或者上层指令要求压榨，PG 对任何一条候选 Path 都在这两个账本上同时算分。</p>
+<p>由于不同特征压榨，PG 对任何一条候选 Path 都在这两个账本上同时算分。</p>
 <ul>
 <li>
-<p><strong>Startup Cost (初始启动沉没代价)</strong>：吐出<strong>前列第一行 (The First Tuple)</strong> 目标匹配数据前，当前算子需要憋气阻塞筹备花去的时钟值。
-比如 <code>SeqScan</code> 它的启动代价为 0 （随时随地硬盘打来就开始往外流）。
-而如果用 <code>HashJoin</code>，它的发车时间极长！你外表得等我内表慢吞吞把全量记录翻完并在内存建好几百万 Hash 数组的桶池完毕后，我才能开放外表探针去撞线吐出第一条结果。因此它启动代价巨大。</p>
+<p><strong>Startup Cost (初始启动沉没代价)</strong>：吐出<strong>第一行目标数据前</strong>，算子需要憋气阻塞筹备花去的时钟值。
+比如 <code>SeqScan</code> 启动代价为 0。但 <code>HashJoin</code> 发车极长！你外表得等内表慢吞吞把几百万记录翻完并在内存建好桶池完毕后，才能下发外表探针撞线，因此启动代价巨大。</p>
 </li>
 <li>
-<p><strong>Total Cost (穷尽扫尾总代价)</strong>：完完整整把包含这符合条件的最后一万行数据全发送完毕、关闭管口所需要的总和分。
-比如 <code>SeqScan</code> 这里就非常要命了，哪怕你只要其中一条也是要扫描全盘去碰的，总价奇高。</p>
+<p><strong>Total Cost (总代价)</strong>：完完整整把所有数据发完、关闭管口所需要的总耗。
+<code>SeqScan</code> 哪怕只要一条也是全盘扫去碰，总价极高。</p>
 </li>
 </ul>
-<p>这双轨的博弈在于，如果上级传进来了诸如 <code>LIMIT 1</code>。代价函数在汇总结算最优解时，权柄会疯狂倾向于带有极低 Startup Cost 的算子。即使它的 Total 极其难看，系统也会果断采纳，以此规避诸如大排序大哈希表建造的愚蠢行径。</p>
-<h3 id="22-操控大局的魔力数字因子-magic-numbers"><a class="header" href="#22-操控大局的魔力数字因子-magic-numbers">2.2 操控大局的魔力数字因子 (Magic Numbers)</a></h3>
-<p>一切 Cost 都是虚构的浮点打分单位。而这一切数字放缩的源头，来自 <code>costsize.c</code> 中被写死的并允许重置的 GUC 常量参数，这是所有高端 DBA 进行参数魔改调参的圣碑之地。</p>
+<p>双轨博弈在于，如果上级传进来了 <code>LIMIT 1</code>。代价函数在汇总结算最优解时，权柄会疯狂倾向于低 Startup Cost 的算子。即使它的 Total 极难看也会果断采纳，以此规避诸如大排序大哈希表建造的愚蠢行径。</p>
+<h3 id="22-操控大局的因子-magic-numbers"><a class="header" href="#22-操控大局的因子-magic-numbers">2.2 操控大局的因子 (Magic Numbers)</a></h3>
+<p>一切 Cost 都是计算浮点值。放缩的源头，来自 <code>costsize.c</code> 中被写死并允许重置的 GUC 常量参数，这是所有高端 DBA 进行魔改调参的圣地。</p>
 <ul>
-<li><code>seq_page_cost = 1.0</code> (默认)：顺序读取一块 8KB 磁盘页的参考耗时被定义为基本单位 1.0 的黄金标尺。</li>
-<li><code>random_page_cost = 4.0</code> (默认)：标志着发生磁头跳步的随机磁盘检索，因其寻道时间通常被认定要比顺读惩罚大 4 倍以上。这就是为什么明明有索引，然而系统却嫌弃随机读太分散而果断放弃走索引、转投入全表顺序扫面的终极解释阀门！在全 SSD 高速时代，高玩通常会将其砍杀降至 <code>1.1</code> 来逼迫系统疯狂走查寻索引分支。</li>
-<li><code>cpu_tuple_cost = 0.01</code> 与 <code>cpu_operator_cost = 0.0025</code>：标志了主板上 CPU 大脑去计算一条 <code>WHERE a=1</code> 这样内存处理操作相比读取磁盘（耗费 1.0）到底有多么的“轻如鸿毛”。</li>
+<li><code>seq_page_cost = 1.0</code> (默认)：顺序读取一块 8KB 磁盘耗时被定义为基本黄金单位 1.0。</li>
+<li><code>random_page_cost = 4.0</code> (默认)：标志发生磁头跳步的随机磁盘检索，因寻道通常比顺读大 4 倍以上。这就是为什么明明有索引，系统却嫌弃随机读太分散而果断放弃走全表扫的终极阀门！在全 SSD 时代，高玩通常会将其砍至 <code>1.1</code> 逼迫系统疯狂走查索引。</li>
+<li><code>cpu_tuple_cost = 0.01</code> 与 <code>cpu_operator_cost = 0.0025</code>：标志 CPU 脑运算一条 <code>WHERE</code> 等内存操作相比于捞磁盘（耗费 1.0）有多么轻如鸿毛。</li>
 </ul>
 <hr>
 <h2 id="3-代价决断前线核心算子估算探秘"><a class="header" href="#3-代价决断前线核心算子估算探秘">3. 代价决断前线：核心算子估算探秘</a></h2>
-<p>在知悉了底层宏观参数之后，让我们潜入 <code>costsize.c</code> 去看看具体算法节点是到底怎么花起这笔账面的。</p>
+<p>在知悉参数之后，去 <code>costsize.c</code> 看看具体算法究竟是如何拨账的。</p>
 <h3 id="31-扫表的代价cost_seqscan-vs-cost_indexscan"><a class="header" href="#31-扫表的代价cost_seqscan-vs-cost_indexscan">3.1 扫表的代价：<code>cost_seqscan</code> vs <code>cost_indexscan</code></a></h3>
-<p>这是整个系统内每天被调用最多数以千万次的基础算盘。</p>
+<p>这是每天被系统狂暴触发千万次的基石结算。</p>
 <ul>
 <li>
 <p><strong>对于全表扫 (<code>cost_seqscan</code>)</strong>：
-公式直白粗暴，毫无虚空魔法：
-<code>总代价 = (目标表格所占的总 Page 数目 * seq_page_cost) + (表格行数 * cpu_tuple_cost) + ...</code></p>
+公式直白粗暴：<code>总代价 = (目标表总 Page 数 * seq_page_cost) + (行数 * cpu_tuple_cost) + ...</code></p>
 </li>
 <li>
 <p><strong>对于索引扫 (<code>cost_indexscan</code>)</strong>：
-这里极其反人类且充满了经验曲线法则。因为索引树一旦跑起来，你去找硬盘上的数据通常是非常恐怖离散化的。
-如果你的主表物理存放与这颗 B 树由于长期增删改查导致碎片化四散（即 <code>Correlation 特征聚簇相关性</code> 趋近于 0），如果强走索引拿十万条记录，你可能要发起非常昂贵的十万次跨磁头大随机跳跃，<code>random_page_cost</code> 能把计分算盘直接干穿爆炸报废去到几千万成本。
-但此时代码也绝不死板，<code>cost_index</code> 中潜藏了一套名为 <strong><code>Mackert-Lohman</code></strong> 的平滑预估公式曲线，去猜测这堆离散请求究竟会命中有多少页可能由于已经在 LRU shared_buffers (内存共享缓存池) 里面而省去了回源物理盘，从而打个猛烈的折扣把成本压制下来防止系统完全不走它。</p>
+这里极其反人类。索引树一旦跑起来去拿原据，是非常恐怖离散化的跳跃。
+如果表物理存放长期因增删改导致碎片四散（<code>Correlation 相关性</code> 趋近 0），只管强走索引拿十万记录，那就是在掀起十万昂贵物理跳变。<code>random_page_cost</code> 能把算盘直接敲出几千万成本。
+但此时代码绝不死板，<code>cost_index</code> 中潜藏着平滑预测公式曲线，去估测那些已存于缓存池内的块并猛力往下折压分数，以免走入纯全栈封禁绝路。</p>
 </li>
 </ul>
-<h3 id="32-兵家大关大争之地关联的代价估量"><a class="header" href="#32-兵家大关大争之地关联的代价估量">3.2 兵家大关大争之地：关联的代价估量</a></h3>
+<h3 id="32-兵家之要的关联大决斗代价"><a class="header" href="#32-兵家之要的关联大决斗代价">3.2 兵家之要的关联大决斗代价</a></h3>
 <ul>
 <li>
 <p><strong>Nested Loop Join (<code>cost_nestloop</code>)</strong>：
-被称为无脑穷魔的梦魇。其计算方式为：让 <code>左表外循环数据总规模 (outer_rows)</code> 全额<strong>连乘</strong> <code>右表被当作单条被压榨的内循环单趟代价 (inner_cost)</code>！
-哪怕最外层只读 1 万行，你的内部索引扫单次只是极小成本 <code>50</code>。在指数级复利连乘叠加下也是非常刺目的分量。但这恰由于其具备 <code>Startup</code> 为接近 0 的绝杀特性以及几乎没占用额外独立运存空间的优点而让它常立于高并发不败之地。</p>
+计算方式无情恐怖：让 <code>左表循环总数据</code> 去硬全额<strong>连乘积</strong> <code>右内层单次查代</code>！
+外层十万条，里层只是绝底的极小花费 <code>50</code>。连加也是巨震之价。但这全赖其 <code>Startup</code> 近 0 的绝杀奇点令它能稳抗高压存活。</p>
 </li>
 <li>
 <p><strong>Hash Join (<code>cost_hashjoin</code>)</strong>：
-其计算的深沉点全部聚焦在一开始的 <code>Startup_Cost</code> 构建蓄水阶段。
-系统会精密计算内表 <code>inner_rows</code> 的总体积有多大，需要使用多大的 CPU 指令资源 <code>cpu_operator_cost</code> 去遍历、计算每一个数据单元的哈希根并放入工作内存 <code>work_mem</code> 内预装配。
-最要命的分叉评估发生在这，一旦优化器察觉到给拨的 <code>work_mem</code> 太抠门小气存不下全部内表哈希链列。代价算口会在原本仅仅只吃 CPU 的计算里，凭空掺入一大笔极其恶心和高居不下的 <code>disk spill penalty（刷盘大惩罚机制量）</code> 开销，并且成倍地因为需要在探针碰撞期间于磁盘多批次重置读取而拉高 <code>Total Cost</code>。从而向顶层告警，规避或强制触发要求走别派系统连接路线以保平安顺遂。</p>
+深沉点聚焦在于最开端 <code>Startup</code> 构建期。
+算法要计算内表有多聚盘、砸多大 CPU <code>cpu_operator_cost</code> 去装填至工作内存 <code>work_mem</code>。
+要命的极其分差于此，一旦系统查获了 <code>work_mem</code> 给得小器容不下全漏。算力会在极其平纯原加里生添一只消耗命极高的罚价：<code>disk spill penalty（刷盘巨大惩罚开销）</code>！让多盘狂读拉起极高 <code>Total</code> 总耗。向最上层示警，从而逼向退避并触发它线连接路全保生天。</p>
 </li>
 </ul>
-<p>经过如此成百上千次精密到苛刻毫厘偏差的小分支节点代价评估积累并合卷对账对比。PG 代价优化的王牌引擎得以从最少几百上千条乃至天文数字交错般混乱的查询可能路径网里，在短短不足几毫秒之内，犹如雷达盲区索敌指引核爆一般，斩钉截铁不差分毫地敲定并拿出了那条绝对通向最优解的绝杀黄金制胜长路。</p>
+<p>经过成百上千次精密节点评估积累，PG 优化的王牌引擎得以从数百纠缠网里，斩钉截铁不差分毫断那向绝通往之绝胜黄金大通道长路。</p>
 
                     </main>
 
