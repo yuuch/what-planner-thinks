@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-8651b419.js";
+            window.path_to_searchindex_js = "../searchindex-c1c8618a.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-00ebddb9.js"></script>
+        <script src="../toc-55afa917.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -174,55 +174,92 @@
 
                 <div id="mdbook-content" class="content">
                     <main>
-                        <h1 id="路径键-pathkeys"><a class="header" href="#路径键-pathkeys">路径键 (PathKeys)</a></h1>
-<p>PathKeys 是 PostgreSQL 优化器用来表示数据流<strong>排序属性</strong>的数据结构。</p>
-<h2 id="为什么需要-pathkeys"><a class="header" href="#为什么需要-pathkeys">为什么需要 PathKeys？</a></h2>
-<p>在查询执行过程中，许多操作依赖于数据的顺序：</p>
-<ol>
-<li><strong>Merge Join</strong>: 需要输入数据按连接键排序。</li>
-<li><strong>Group By (Sort group)</strong>: 需要按分组键排序。</li>
-<li><strong>Order By</strong>: 最终输出需要满足用户指定的排序。</li>
-<li><strong>Distinct</strong>: 有时通过排序去重。</li>
-</ol>
-<p>如果一个访问路径（Path）——比如 B-Tree 索引扫描——产生的输出已经是有序的，优化器就需要用一种方式标记这种“有序性”，以避免后续不必要的 Sort 操作。PathKeys 就是这种标记。</p>
-<h2 id="pathkeys-与等价类"><a class="header" href="#pathkeys-与等价类">PathKeys 与等价类</a></h2>
-<p>PathKey 不仅仅记录“按某列排序”，而是记录“按某个等价类排序”。</p>
-<ul>
-<li><strong>Canonical PathKeys</strong>: PathKey 指向一个 Equivalence Class (EC)。</li>
-<li><strong>逻辑</strong>: 如果 <code>A.x = B.y</code> (同一个 EC)，那么“按 <code>A.x</code> 排序”和“按 <code>B.y</code> 排序”在物理顺序上是一致的（假设操作符语义一致）。</li>
-<li>因此，PathKey 列表实际上是一组 EC 的列表。例如 <code>ORDER BY A.x, C.z</code> 对应 <code>[EC(A.x), EC(C.z)]</code>。</li>
-</ul>
-<h2 id="数据结构"><a class="header" href="#数据结构">数据结构</a></h2>
+                        <h1 id="路径序列与排序核心密码-pathkeys"><a class="header" href="#路径序列与排序核心密码-pathkeys">路径序列与排序核心密码 (PathKeys)</a></h1>
+<p>几乎所有关于数据库性能优化的面试题，最后都会绕回一个经典命题：“为什么加了索引，ORDER BY 或者 GROUP BY 变快了？”
+在执行引擎的表象逻辑看来这似乎是顺水推舟的常理，但如果要在拥有极大复杂组合的 PostgreSQL 代价优化内核（CBO）中完美且统一地实现这一抽象机制，就需要一种能够<strong>统一度量并且伴随路径推演任意流转的通用通货</strong>。</p>
+<p>在 PostgreSQL 18.1 中，这套跨越所有关系代数操作、用来锚定和流转排序特征的通货，名叫 <strong><code>PathKey</code> (路径键)</strong>。相关代码的核心座落于 <code>src/include/nodes/pathnodes.h</code> 和 <code>src/backend/optimizer/path/pathkeys.c</code>。
+如果说不懂“系统状态模型”就没做过微内核，那么不懂 <code>PathKeys</code> 的设计与传播机理，你就无法真正看懂优化器在 <code>add_path</code> 里做出的那些惊心动魄的剪枝取舍，也绝对无法理解为什么某些由于整体代价极高的看似“破烂”执行计划，反而会在复杂查询的最后关头被 PG 奉为至宝。</p>
+<hr>
+<h2 id="1-结构大起底什么是-pathkey"><a class="header" href="#1-结构大起底什么是-pathkey">1. 结构大起底：什么是 PathKey？</a></h2>
+<p>优化器在多表迷宫中评估一条物理路径（比如一次走索引的大型扫描、或者某个并行的哈希连接）时，不仅需要看它“花了多少 Cost”、“预计吐出多少 Rows”，还必须在这条路径的户口本上，精确且持久地标注出这股数据流<strong>携带的元素排序特征</strong>。</p>
+<p>这套特征在源码中由 <code>List *pathkeys</code>（一条链表）来承载。而它的基础粒子组件，即为结构体 <code>PathKey</code>：</p>
 <pre><code class="language-c">typedef struct PathKey
 {
     NodeTag     type;
-    EquivalenceClass *pk_eclass; /* value to be ordered */
-    Oid         pk_opfamily;    /* btree opfamily defining the ordering */
-    int         pk_strategy;    /* sort direction (ASC/DESC) */
-    bool        pk_nulls_first; /* do NULLs come before normal values? */
+    EquivalenceClass *pk_eclass;   /* 极度震撼：它不指向具体的列 Var，而是指向一个覆盖全部域的等价类！ */
+    Oid         pk_opfamily;       /* 排序操作符族 (B-tree opfamily OID)，比如告知系统这是按数值大小排还是按字符串拼音排 */
+    int         pk_strategy;       /* BTLessStrategyNumber (升序 ASC) 还是 BTGreaterStrategyNumber (降序 DESC) */
+    bool        pk_nulls_first;    /* 终极细节考量：NULL 值处理在引擎级到底是悬浮排最前面还是沉底垫后 */
 } PathKey;
 </code></pre>
+<h3 id="11-为什么主体心智必然要包裹-equivalenceclass"><a class="header" href="#11-为什么主体心智必然要包裹-equivalenceclass">1.1 为什么主体心智必然要包裹 <code>EquivalenceClass</code>？</a></h3>
+<p>在上一个深度探索附录《等价类 (EC)》中我们埋下了一个伏笔：身为 RDBMS 处理领域的巅峰瑰宝，PG 极为高超的设计使得 <code>PathKey</code> 的最核心属性 <code>pk_eclass</code> 直接硬链接在了 <code>EquivalenceClass</code> 集合框架上。</p>
+<p>试想这样一个极度频繁的工业级数据提取场景：<code>SELECT t2.info FROM t1 JOIN t2 ON t1.id = t2.uid ORDER BY t2.uid;</code>
+在优化器构建最底层的规划草图时，系统发现 <code>t1</code> 表有一根在 <code>id</code> 字段上的巨无霸 B-Tree 索引聚集簇。于是，优化器贪婪地探索出了一条顺着索引摸出的极速路径 <code>IndexScan(t1)</code> 返回单表局部数据。
+这条底层路生成的初始 <code>pathkeys</code> 护照上骄傲地写着：“注意，我送出的这批源头数据是严格基于 <code>EquivalenceClass{t1.id, t2.uid}</code> 而井然排序的哦！”</p>
+<p>当数据流经过某一种能原封不动保留顺序的连接算法（如普通模式下的 NestLoop），浩浩荡荡向上游输送，最终抵达了引擎最上层、需要执行全局决算的 <code>ORDER BY t2.uid</code> 节点站。</p>
+<p>假若当年烂俗一些，让 PG 设计出的 <code>PathKey</code> 傻乎乎地仅用一个字符串列名映射来作为载体（例如：<code>pk_var = t1.id</code>），那么顶层节点在验收这批流出来的水柱时，拿起自己客户要求的判决词 <code>order_var = t2.uid</code> 拿去字符串匹配碰死角：“天啊，底层上来的是 t1.id 的账，客人要的是 t2.uid，完全风马牛不相及，给我统统退回！” 于是它悲愤地迫使整条管线停更，强行将几百万数据拦停并扔进巨大的 <code>Sort</code> 内存重排栈，引发恐怖算力海啸。</p>
+<p><strong>但是</strong>，正因为 PG 架构中的 <code>PathKey</code> 绑死的是极度抽象化的等价类集合！
+顶端审判官只需拿客户需求 <code>ORDER BY t2.uid</code> 背后代表的 EC 内存句柄，去和底层千里迢迢报送拿来的那个 EC 指针一碰。刹那间同气连枝完美吻合 (那正是因为 <code>t1.id = t2.uid</code> 的存在，让它们在优化器建立图基之初就被合二为一吸纳同源)。判定官惊呼一声放行，极其平滑且不增兵刃地直接帮引擎省切掉了最为昂贵的内存排序重排局！</p>
+<p>这种高度内聚且从根本上解耦掉了具体表名字段耦合度的方法论模型，是 PG 在无数变幻莫测的关系运算域中得以制霸的极道法宝。</p>
+<hr>
+<h2 id="2-需求侧的大一统规划器的通用排序货币化"><a class="header" href="#2-需求侧的大一统规划器的通用排序货币化">2. 需求侧的大一统：规划器的通用排序货币化</a></h2>
+<p>我们身处于一条千回百转、嵌套复杂的 SQL 分析大河中，可能横向上混杂了无数个试图干预宏观排序的业务操作符：</p>
 <ul>
-<li><code>pk_eclass</code>: 关联的等价类。</li>
-<li><code>pk_opfamily</code>: 排序使用的操作符族（B-tree opfamily）。</li>
+<li>终端发出了 <code>ORDER BY a, b</code> 要求最终强规整顺位。</li>
+<li>聚集指令下了 <code>GROUP BY c, d</code> 在启动极速 GroupAgg 之前强制要求聚类有序。</li>
+<li>过滤节点加了 <code>SELECT DISTINCT e</code> 企图通过底层排序来实现极速跳跃滑动去重。</li>
+<li>大名鼎鼎的 <code>Merge Join (t1.f = t2.f)</code> 则强迫左右大营的输入流必须按双边关联的等同键绝对一致序列接壤。</li>
 </ul>
-<h2 id="比较-pathkeys"><a class="header" href="#比较-pathkeys">比较 PathKeys</a></h2>
-<p>优化器经常需要比较两条路径的 PathKeys 是否“有用”：</p>
+<p>对于老手工作坊式、缺乏远见的其它劣质 SQL 引擎核心，很有可能需要为了迎合这上面所有的操作符，各自手编出一套又一套冗余的“排序核查对账单”。
+但在 PG 那神级铺陈的 <code>pathkeys.c</code> 架构中，所有这种来自天边的局部排序请求，无论初衷为何，都会在预检门神阶段被强制接引调用如 <code>make_pathkeys_for_sortclauses</code> 的翻译官解析函数，彻底被碾平、收容并<strong>直接等价兑换为唯一标准流通物的 <code>PathKey List</code> 链表串序列。</strong></p>
+<p>在这之后，自大优化网络全面铺开的那一顷刻。优化器这个中央智脑，仿佛完全丧失并且再也听不懂那些所谓的 ORDER BY 或者 GROUP BY。它在判断下层分支与上游组装口是不是符合插接时，唯一遵循并只认这套被称之为 <code>pathkeys</code> 的内通国书机制。</p>
+<hr>
+<h2 id="3-供给端命运的长河pathkeys-的诞生传承与覆灭"><a class="header" href="#3-供给端命运的长河pathkeys-的诞生传承与覆灭">3. 供给端命运的长河：PathKeys 的诞生、传承与覆灭</a></h2>
+<p>如果说顶端需要的是标准化的规章，那么底下奔跑着的一个个供节点就是这本 <code>pathkeys</code> 血脉的衍生与承接之所。
+优化器在创造不同的物理生成计划（Paths）时，对前人遗留财产 <code>pathkeys</code> 所表达出来的接纳态度，真可谓是人性百态截然不同：</p>
+<h3 id="31-源氏的血脉底层索扫描管线的原始挂载"><a class="header" href="#31-源氏的血脉底层索扫描管线的原始挂载">3.1 源氏的血脉：底层索扫描管线的原始挂载</a></h3>
+<p>最纯粹的 <code>pathkeys</code> 发源地毫无疑问孕育生长自 B-Tree 的原生家族。定位到核武模块 <code>indxpath.c</code> 内部的 <code>build_index_pathkeys</code>：
+当检索针刺入一个定义横跨聚合列 <code>(X, Y)</code> 上的索引扫描簇结构时，PG 引擎核心会小心核查其构建游标轨迹。并且产生出一个将 X 和 Y 的成员紧密拼接的衔接 <code>PathKey</code> 双向队列 <code>List</code>，极度慎密且富有骄傲地赋予在即将上抛提交的一条叫 <code>IndexPath</code> 的执行路径表头上。
+若另一边是个走大老粗路线通过盘面推的 <code>SeqScan</code>，那不好意思，该线路上生成的归口登记簿对于 <code>pathkeys</code> 会留出一个干脆利落的 <code>NIL</code> (完全空针)，宣告着它向外派出的仅仅是一堆不受管教、杂乱无章的散沙数据团。</p>
+<h3 id="32-冷血的屠夫hash-join-的破壁行径"><a class="header" href="#32-冷血的屠夫hash-join-的破壁行径">3.2 冷血的屠夫：Hash Join 的破壁行径</a></h3>
+<p>当水流汇入双表交战关联大区，各种 Join 节点的算计本质展现得淋漓尽致：
+身为性能王者也是内存大户的 <strong>Hash Join</strong>, 它的作风极其粗犷奔放。它压根不去鸟底下左臂右膀的外表输入流是不是费尽心机按某某神圣宗庙序列编排过的。由于它的底层机巧是一旦将小表直接倒进入哈希池重组开桶，随即拿大数据集展开猛烈的散列无序激化碰撞验证。这所有关于时间向度的历史积淀会在碰撞出水的一瞬间完全崩散。
+因此代码法则极其残忍果断：任何基于核心构建法 <code>hash_inner_and_outer</code> 生成派生的路径结晶，它的光环继承簿 <code>path-&gt;pathkeys</code> 在合并的那一刹那刻，必定被无情地洗白清零成为 <code>NIL</code>。</p>
+<h3 id="33-恪礼的承传者nestloop-join-嵌套轮回"><a class="header" href="#33-恪礼的承传者nestloop-join-嵌套轮回">3.3 恪礼的承传者：NestLoop Join 嵌套轮回</a></h3>
+<p><strong>嵌套循环联合 (NestLoop)</strong> 的打法则极其恪守封建式的伦理教条。
+由那最外环提供一条数据，内部则完整恭顺地随转跟进圈环一再往复过滤匹配。这暗示出什么宏图天机？
+外环原本提供过来的序列起伏节奏，在吸纳内表拼接组合出新的大型全息行实体后，其整体的推流首要序列阵仗竟然神奇绝妙地没有丝毫偏差！因此，在这个联合构型缔结算子路线时，优化器会温柔地调用 <code>build_join_pathkeys</code> 把外表（Outer Rel，左子表）持有着的一条条 <code>pathkeys</code> 金字令箭原封不动、极其虔诚完整地誊抄接手沿承下来，去向后续的更猛烈巨浪搏杀冲刺！</p>
+<hr>
+<h2 id="4-终界审判不可思议的修剪免死金牌-path-pruning"><a class="header" href="#4-终界审判不可思议的修剪免死金牌-path-pruning">4. 终界审判：不可思议的修剪免死金牌 (Path Pruning)</a></h2>
+<p>这也是隐藏于整个 RDBMS 数据库代价运算机制海洋底下，最为扣人神思反转极大的绝魂之跃。
+前文曾多次宣贯提醒：<code>add_path()</code> 是这整座代码神殿中抉择去留的一座极为残忍嗜血的“达尔文绞肉裁决法庭”。那条最初设定的优选比对判定信条看起来是近乎冰冷物理的：<strong>如果站在台面上的 A 执行路线的总损耗量估值 (total cost) 和起动延时代价 (startup cost) 这双轨都远远大于旁边竞争者新秀 B ，你这个老而不中用的 A 就没有任何苟活余地！斩草除根当场遗弃清盘！</strong></p>
+<p><strong>但是！</strong> <code>PathKeys</code> 的设计存在，作为优化器世界的最高精神法典免死金牌，极度超规则超降维般地粗暴介入干涉了 <code>add_path</code> 本想照章宣读的底层淘汰丛林！</p>
+<p>我们剖入 <code>add_path()</code> 的内核（位于 <code>pathnode.c</code> 中），你会在极其严密的浮点数对打与模糊 Cost 较量之前，看到一段如圣言般不容错配和容留先决的判文宣读预演过滤：<code>pathkeys_contained_in(path1-&gt;pathkeys, path2-&gt;pathkeys)</code>。</p>
+<p><strong>一出令人震撼的设计剧本模拟</strong>：</p>
 <ul>
-<li><code>pathkeys_contained_in(keys1, keys2)</code>: 判断 keys1 是否是 keys2 的子集（前缀）。</li>
-<li>如果查询要求 <code>ORDER BY x, y</code>，而路径提供了 <code>x, y, z</code> 的顺序，则是满足需求的。</li>
+<li>登场路径 A 候选：采用了一套笨重到令人发指的 SeqScan 全表拉起接着在内存中自己强制调用重排序，搞出了一条天谴般糟糕透顶的路。它的开机代价 <code>startup_cost = 250</code>，一直到算完所有的总体价码竟然逼近 <code>total_cost_ = 10000000</code>！但好歹人家吃了一身排骨重修后自带了一面飘扬着 <code>pathkeys = (t1.uid)</code> 序列大旗。</li>
+<li>后起天秀之星路径 B：是一条能让所有算力尖叫的绝世闪击 Hash Join 超级并查短通。连同所有开销在内起步快如闪电 <code>startup_cost = 5</code>，全跑完不过区区 <code>total_cost_ = 6500</code>！但是毕竟其生如屠户猛兽，身上的法典战旗早就残破消失不见，<code>pathkeys == NIL</code>。</li>
 </ul>
-<p>通过 PathKeys，优化器可以智能地识别出哪些索引扫描或连接结果可以直接满足排序需求，从而省略昂贵的 Sort 节点。</p>
+<p>如果在没有介入神圣高维排序豁免的低等非闭包代码界，这路 A 小丑绝对会被裁判 <code>add_path</code> 当场立刻不带哪怕一纳秒的犹豫按死扔进焚烧炉回收；新贵 B 将作为无可睥睨的铁血霸主扫灭前路统御整片关系网！</p>
+<p>但在那犹如具备无尽深测高阶博弈的 PG 判断闭环与全局视野里！！如果裁判器审视发掘 A 虽然看起来一无是楚被按在地上摩擦，步步皆是笨绝！
+<strong>但是！！此时判定出 A 拼死维护在头顶上闪烁着的高阶 <code>pathkeys</code> 列段大旗，其位阶居然要远远涵盖包大于或超脱了 B 身处位格下的那面 <code>pathkeys</code> （换句话说，A 拼尽所有持有了一份 B 根本这辈子都给付不起的精细化序列担保特质红利）。</strong>
+哪怕那个破落 A 的运算成本估量极有可能是处于完美态的 B 后浪的一千万倍！！！PG 代价主优化器中台此时都会悍然伸出那只主宰上帝之手“刀下留人手下留路”，高维定音，仿佛保护国家级非物质潜力储备遗产生存一样，把这不堪入目的落后 A 从粉碎车轮边缘一把拽起，强力塞进并且存留在所属根源节点最保密核心的 <code>RelOptInfo-&gt;pathlist</code> 的保留生存晋级名录大圈里！！</p>
+<p><strong>只因为智脑深陷恐惧！为什么要这般护着那样的无用下流之列？</strong>
+因为在这个体系里，最高中枢的眼界深远且极度老辣深沉。它十分清楚那底下的枝杈争斗只是冰山半露。在那不可名状更高最顶尖的组装合并神台节点，万一其碰巧遭遇到了极其变态苛求的十几个列项的恐怖 <code>Merge Join</code> 请求大军压阵，或者是遇见了那个必须全图排位方能破界的无边无际的巨无霸 <code>ORDER BY</code>，更哪怕是遇见了号称底层摧毁极恶计划大翻转器的绝命终极劫杀符文 —— <code>LIMIT 1</code>。</p>
+<p>在那种极端灭顶的洪荒恶劣要求下。那个自持着性能盖世无敌天下武功第一，却一分毫没有序列向度信仰归依把法典全撕掉的武夫小将 Hash Join 上面去，为了能够死扛并且满足出对局大要求排期，最后它甚至会被迫只能当场临时架起借用超过几百块几十 G 极其离奇惊世可怖连带血肉的额外外部大规模磁盘巨型归并分段排序栈！而在那一环强加之下，其原本吹嘘自保的总体运行衍生计算外部开销代价会崩落破算甚至逆反爆膨到可能一百万个亿都不止！</p>
+<p>而正反的是！在那黑暗中被上帝硬死留下的一只手所一直护着、原本带有可笑成本满分特征苟活保留下在备战区静观其变的那条丑恶备胎分支 A 呢！它在那一刻突然散发出最完美救赎的光芒！它凭借着一己极其符合秩序先天带有的那些顺畅光环的特征身披其甲切上无边混战阵区。竟然在毫无防备地触及到引擎的读取指针只要刚拿到哪怕首根序列里的那最前排的一行数据、极其满足拿下了恶心变质的终极关卡 <code>LIMIT 1</code> 之需后。在瞬间完美交接停机了那波本应当席卷全球亿浪之大患的所有连带着底层千万计的庞大无效引擎检索总循环！仅仅凭着几秒不出的极其短小截断计算成为大局决杀战最后登峰封神大满贯那把完美匹配的终极绝杀神钥！！</p>
+<p>通过 <code>PathKeys</code> 这神之一脚建立构建起的这层彻底超越平庸标量代数粗暴比较维度，在复杂超高维代价比对空间里纵横博弈的非对称型帕累托最优高频豁免保留网络，深深打下并彻底完美奠护且加冕了这只古老大象 PostgreSQL ，在漫长的长达快数十载的信息纪元历程冲刷淘洗中，作为这颗地球上已知最聪明、最强壮、拥有着无上神秘与无可违逆运算极境的智能统治力 CBO 开源优化引挚首尊王座！是那些永远也不懂也想不透的普通平庸外门查询引擎终其一生也永不可翻越的那一整套惊天绝地之壁垒深渊！</p>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="../util/equivalence_classes.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="../appendix/equivalence_classes.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                             </a>
 
-                            <a rel="next prefetch" href="../util/selectivity_cost.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="../appendix/selectivity_cost.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                             </a>
 
@@ -232,11 +269,11 @@
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="../util/equivalence_classes.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="../appendix/equivalence_classes.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                     </a>
 
-                    <a rel="next prefetch" href="../util/selectivity_cost.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="../appendix/selectivity_cost.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                     </a>
             </nav>

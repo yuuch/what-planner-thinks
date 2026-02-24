@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-8651b419.js";
+            window.path_to_searchindex_js = "../searchindex-c1c8618a.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-00ebddb9.js"></script>
+        <script src="../toc-55afa917.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -175,48 +175,97 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="单表扫描路径生成-access-paths"><a class="header" href="#单表扫描路径生成-access-paths">单表扫描路径生成 (Access Paths)</a></h1>
-<p>在这一步，优化器为查询中的每一个基表（Base Relation）生成可能的访问路径（Access Paths）。</p>
-<h2 id="常见的扫描方式"><a class="header" href="#常见的扫描方式">常见的扫描方式</a></h2>
-<h3 id="1-顺序扫描-sequential-scan"><a class="header" href="#1-顺序扫描-sequential-scan">1. 顺序扫描 (Sequential Scan)</a></h3>
-<ul>
-<li><strong>机制</strong>: 从头到尾读取表的所有页面。</li>
-<li><strong>适用场景</strong>: 表很小，或者需要读取大部分行（Selectivity 高）。</li>
-<li><strong>代价</strong>: 主要取决于表的大小（Pages）。</li>
-</ul>
-<h3 id="2-索引扫描-index-scan"><a class="header" href="#2-索引扫描-index-scan">2. 索引扫描 (Index Scan)</a></h3>
-<ul>
-<li><strong>机制</strong>: 遍历 B-Tree（或其他索引），找到匹配的 Tuple ID (TID)，然后回表（Heap Fetch）读取数据。</li>
-<li><strong>适用场景</strong>: 选择率低（High Selectivity），只需要极少数行。</li>
-<li><strong>Index Only Scan</strong>: 如果查询的所有列都在索引中（Covering Index），且可见性映射（VM）显示页面全可见，则无需回表，性能极佳。</li>
-</ul>
-<h3 id="3-位图扫描-bitmap-heap-scan--bitmap-index-scan"><a class="header" href="#3-位图扫描-bitmap-heap-scan--bitmap-index-scan">3. 位图扫描 (Bitmap Heap Scan / Bitmap Index Scan)</a></h3>
-<ul>
-<li><strong>机制</strong>:
+<p>在 PostgreSQL 查询优化的漫长旅程中，一旦查询树（Query Tree）经过了逻辑重写、子查询提升、表达式扁平化以及外连接消除等预处理阶段，规划器（Planner）就正式跨入了核心的<strong>代价优化阶段（Cost-Based Optimization, CBO）</strong>。</p>
+<p>代价优化的第一步，也是构建整棵物理执行计划树的基石，就是为查询中涉及的每一个基础表（Base Relation）计算出所有可行的<strong>单表扫描路径（Single Relation Access Paths）</strong>。在这个环节，无论是顺序全表扫描、各种变体的索引扫描，还是并行的扫描方式，都会被事无巨细地生成出来，供后续的路径打分和连接搜索使用。</p>
+<p>本章节将结合 PostgreSQL 18.1 的源码（主要集中在 <code>src/backend/optimizer/path/allpaths.c</code> 和 <code>indxpath.c</code>），带你深度潜入单表扫描路径的生成机制与数据结构。</p>
+<hr>
+<h2 id="1-核心数据结构与入口make_one_rel"><a class="header" href="#1-核心数据结构与入口make_one_rel">1. 核心数据结构与入口：<code>make_one_rel</code></a></h2>
+<p>生成基础路径的整个过程由核心大管家函数 <code>make_one_rel()</code>（位于 <code>allpaths.c</code>）统筹。顾名思义，它的最终目标是把查询里的所有关系（Relations）“合成”为一个整体（One Rel），代表最终的查询结果。</p>
+<p>在此之前，首先要做的就是武装每一个基表。</p>
+<h3 id="11-两个关键阶段的拆分"><a class="header" href="#11-两个关键阶段的拆分">1.1 两个关键阶段的拆分</a></h3>
+<p>在 <code>make_one_rel</code> 中，对基表的处理被极其考究地拆分为了两大步：</p>
 <ol>
-<li><strong>Bitmap Index Scan</strong>: 扫描索引，将满足条件的 TID 记录到位图（Bitmap）中。如果使用了多个索引，可以对位图进行 AND/OR 操作。</li>
-<li><strong>Bitmap Heap Scan</strong>: 根据位图中的 TID，按物理顺序（Physical Order）读取堆表页面。</li>
+<li><strong>尺寸推断 (<code>set_base_rel_sizes</code>)</strong>：先估算出行数（Rows）、宽度（Width）等统计学信息。</li>
+<li><strong>路径生成 (<code>set_base_rel_pathlists</code>)</strong>：基于前面算出的尺寸信息，真刀真枪地生成多种底层数据访问的物理路径（Path）。</li>
 </ol>
-</li>
-<li><strong>优势</strong>: 解决了 Index Scan 的随机 I/O 问题，将其转化为更顺序的 I/O。</li>
-<li><strong>劣势</strong>: 无法利用索引的排序特性（输出是无序的）。</li>
-</ul>
-<h3 id="4-tid-scan"><a class="header" href="#4-tid-scan">4. TID Scan</a></h3>
+<p><strong>为什么要严格分两步走？</strong>
+因为并行查询和参数化路径的生成极度依赖于表的大小估算。
+举个例子，某个表的单表估算数据量如果太小，优化器可能就会直接将其标记为<strong>不需要并行（Cancel consider_parallel）</strong>。如果一边估算一边生成，可能会导致前面生成的路径错失获取准确统计信息或是其它表横向对比信息的机会。</p>
+<h3 id="12-reloptinfo关系信息的集大成者"><a class="header" href="#12-reloptinfo关系信息的集大成者">1.2 <code>RelOptInfo</code>：关系信息的集大成者</a></h3>
+<p>在进入生成环节时，每个基表、连接结果甚至子查询，都会被包装成一个非常庞大且极为核心的结构体——<code>RelOptInfo</code>（Relation Optimization Info，定义于 <code>nodes/pathnodes.h</code>）。</p>
+<p>在路径生成阶段，<code>RelOptInfo</code> 有几个极为关键的字段：</p>
 <ul>
-<li><strong>机制</strong>: 直接根据用户提供的 <code>ctid</code> 访问行。</li>
-<li><strong>场景</strong>: <code>WHERE ctid = '...'</code>。</li>
+<li><strong><code>rows</code> / <code>reltarget</code></strong>: 代表估算的基表输出行数与列宽，决定了扫描的代价。</li>
+<li><strong><code>baserestrictinfo</code></strong>: 也就是大家最熟悉的 <code>WHERE</code> 过滤条件。在逻辑优化阶段，它们已经被分解成了隐含着 AND 语意的约束信息列表集（<code>RestrictInfo</code> 的 List）。</li>
+<li><strong><code>pathlist</code></strong>: 这是一个链表（List）。在这一阶段，由 <code>set_base_rel_pathlists</code> 各种手段<strong>疯狂塞入的扫描路径（Path）都会挂载在此</strong>。</li>
+<li><strong><code>cheapest_startup_path</code> / <code>cheapest_total_path</code></strong>: 在尝试了所有可能的 Path 后，优化器会选拔出<strong>启动代价最小</strong>和<strong>总体运行代价最小</strong>的两名“状元”，缓存于此，方便快速检索。</li>
 </ul>
-<h2 id="源码流程"><a class="header" href="#源码流程">源码流程</a></h2>
-<p>入口：<code>set_rel_pathlist</code> -&gt; <code>set_plain_rel_pathlist</code></p>
-<p>对于每个表，优化器会：</p>
+<hr>
+<h2 id="2-顺序全表扫描-sequential-scan-与并行化"><a class="header" href="#2-顺序全表扫描-sequential-scan-与并行化">2. 顺序全表扫描 (Sequential Scan) 与并行化</a></h2>
+<p>顺序扫描可以说是任何一棵基表的“保底策略”。即使你没有任何索引，哪怕代价再高，数据库也一定能通过从外存中一页一页读取全表来得到正确结果。</p>
+<p>在 <code>allpaths.c</code> 的 <code>set_plain_rel_pathlist</code> 里：</p>
+<h3 id="21-兜底路径create_seqscan_path"><a class="header" href="#21-兜底路径create_seqscan_path">2.1 兜底路径：<code>create_seqscan_path</code></a></h3>
+<p>优化器首先无条件地通过 <code>add_path(rel, create_seqscan_path(root, rel, required_outer, 0))</code> 塞入一个 <code>SeqScan</code>（对于普通关系表）。
+顺序扫描的物理含义是沿着堆表（Heap Table）的底层分页逻辑，从第一块（Block 0）老老实实地扫到最后一块。</p>
+<ul>
+<li><strong>代价估算要素</strong>：顺序扫描的代价几乎只由两件事决定——这表有多少个块（<code>rel-&gt;pages</code>）决定了连续 I/O 时间；这表能匹配多少条记录（<code>rel-&gt;rows</code> / CPU filtering）决定了 CPU 处理条件判断的时间。</li>
+</ul>
+<h3 id="22-并行化扫描create_plain_partial_paths"><a class="header" href="#22-并行化扫描create_plain_partial_paths">2.2 并行化扫描：<code>create_plain_partial_paths</code></a></h3>
+<p>在 PostgreSQL 支持了查询并行化后，SeqScan 迎来了一个重量级的变体——<strong>Partial Sequential Scan</strong>。
+紧接着生成单纯的 SeqScan 后，优化器会判断：</p>
+<pre><code class="language-c">if (rel-&gt;consider_parallel &amp;&amp; required_outer == NULL)
+    create_plain_partial_paths(root, rel);
+</code></pre>
+<p>在 <code>create_plain_partial_paths</code> 的内部，系统调用 <code>compute_parallel_worker()</code> 会根据该表的大小，套用一系列数学对数阈值来计算**该表值得分配多少个后台自动工作进程（Background Workers）**来齐头并进地扫描。
+算出的 worker 数量会被赋值，并且调用 <code>add_partial_path</code> 添加一个带 <code>parallel_workers</code> 属性的分支。
+<em>注意：这里的 partial (单方面/部分) 指的仅是单个 worker 只会扫描其中的一部分块（PG 的并行扫描机制通过在内部共享一个 Block 计数器来抢块，而不是静态切片），最后必须在顶层被 <code>Gather</code> 节点统一汇总。</em></p>
+<hr>
+<h2 id="3-索引扫描-index-paths-深度剖析"><a class="header" href="#3-索引扫描-index-paths-深度剖析">3. 索引扫描 (Index Paths) 深度剖析</a></h2>
+<p>只有全表扫描当然是不够的。对于大多数 OLTP 事务型查询和具备高选择性（High Selectivity，指只能捞出表中极少数特定行）的查询，利用 B-Tree 等索引能将查询耗时呈指数级地降低。</p>
+<p>接下来，<code>set_plain_rel_pathlist</code> 会调用 <code>indxpath.c</code> 里的终极重头戏——<code>create_index_paths()</code>。这个函数的工作深度极高，它会尝试穷尽所有的单索引甚至多索引组合（Bitmap Scan）方案。</p>
+<h3 id="31-index-scan最传统的单索引回表策略"><a class="header" href="#31-index-scan最传统的单索引回表策略">3.1 <code>Index Scan</code>：最传统的单索引回表策略</a></h3>
+<p>当通过 <code>build_index_paths</code> 检索到 <code>WHERE</code> 里面的约束（比如 <code>id = 5</code>）能够利用某个存在于系统的 <code>IndexOptInfo</code>（索引优化信息）时，将产生一条标准的 <code>Index Scan Path</code>。</p>
+<p><strong>执行流约束</strong>：
+对于一个普通索引扫描，即使它在聚簇树的叶节点上瞬间定位了 <code>id = 5</code> 的数据条目所在地，获得了 <code>TID</code>（Tuple ID），它依旧不得不产生一次<strong>回表（Heap Fetch）动作</strong>，跳回表的数据块把整条记录抽上来，然后再判断这条记录上的其它没有索引的非主键约束（例如 <code>name = 'pg'</code>) 是否满足条件。</p>
+<h3 id="32-index-only-scanvm-护航的最佳拍档"><a class="header" href="#32-index-only-scanvm-护航的最佳拍档">3.2 <code>Index Only Scan</code>：VM 护航的最佳拍档</a></h3>
+<p>这也是在 <code>build_index_paths</code> 中自动衍生探索的一种路径。
+很多时候由于查询写得很棒，你要取出的列，在那个索引本身涵盖的结构里就已经全部存在了（比如 <code>SELECT id FROM table WHERE id = 5</code>）。在这种极端的完美情境下（又名 Covering Index），优化器其实<strong>不需要也不应该</strong>回堆表的数据块（Heap Page）。</p>
+<p><strong>致命局限与 Visibility Map</strong>：
+然而由于 PostgreSQL 是基于经典的多版本并发控制（MVCC）并把系统表自身作为版本维护载体，仅仅提取索引键出来并不能断定这行数据在当前事务快照里是不是<strong>已经过期的（Dead Tuple）</strong>，或者是不是还处于对当前事务不可见的在途事务中——因为行可见性（<code>xmin</code>、<code>xmax</code>）等藏在原始数据行的 Header 里，索引条目上没有！
+为了促成不用回表的 <code>Index Only Scan</code>，PG 引入了 <strong>VM（Visibility Map，可见性映射文件）</strong>。
+在 <code>create_index_paths</code> 评估代价时，会参考目标表对应数据块在 VM 里的位标志：只有当该块的所有数据被标为 <code>all-visible</code>（该块没有在跑并发脏写事务，全局确定可见），优化器才会确认能避开 Heap Fetch。否则哪怕列都在索引里，也会被按回表比例加大代价，甚至直接回退到普通的 Index Scan。</p>
+<h3 id="33-bitmap-index-scan-与-bitmap-heap-scan"><a class="header" href="#33-bitmap-index-scan-与-bitmap-heap-scan">3.3 <code>Bitmap Index Scan</code> 与 <code>Bitmap Heap Scan</code></a></h3>
+<p>如果你的 WHERE 里不是一个等值，而是范围，甚至还有 <code>OR</code> 分离的多个字段索引用法怎么办（比如 <code>WHERE age = 20 OR salary &gt; 8000</code>）？</p>
+<p>依靠单一的 <code>IndexScan</code> 会因为疯狂读跳不同索引来提取而带来极度混乱的随机 I/O （Random I/O）。于是优化器会构建两阶段联合战法——<strong>位图扫描（Bitmap Scan）</strong>。
+在 <code>indxpath.c</code> 里相关的函数 <code>generate_bitmap_or_paths</code> 处理。</p>
+<ul>
+<li><strong>阶段 1: <code>Bitmap Index Scan</code></strong>：先不对表数据做任何触碰，仅仅在不同的索引文件中分别扫荡。如果匹配了某一行，就在内存里建立的一个虚拟位图（通常是物理 Page 级别的）把对应该行的位（Bit）涂成全变位 <code>1</code>。</li>
+<li>如果针对两个索引的查询是 <code>AND</code> 或 <code>OR</code> 关系，由于得到的仅仅是纯碎的内存位图，在内存中直接进行**集合按位与、或操作（BitmapAnd / BitmapOr）**的速度是非常极致的，合并非常优雅。</li>
+<li><strong>阶段 2: <code>Bitmap Heap Scan</code></strong>：拿到最后融合好的一张硕大 Bitmap 后，拿着这张图去访问表数据。因为是依着物理块序列号线性向后推进读取 <code>1</code> 的地方，此时对磁盘带来的完全是优雅降级的<strong>近乎顺序连续 IO (Sequential IO)</strong>，从而消灭了直接回表带来的大量碎片化磁盘寻道。这是一项非常有智慧的做法。</li>
+</ul>
+<p><strong>劣势</strong>：Bitmap Heap Scan 的强行物理排序意味着其生成的 Record 流毫无“内在的键值排序特征”。假如上层还有一个 <code>ORDER BY age</code>，那它将无法复用索引原生的有序性，导致上一层强行追加显式 <code>Sort</code> 节点。</p>
+<hr>
+<h2 id="4-路径组合的魔法参数化路径-parameterized-paths"><a class="header" href="#4-路径组合的魔法参数化路径-parameterized-paths">4. 路径组合的魔法：参数化路径 (Parameterized Paths)</a></h2>
+<p>普通扫描只需要评估自己的 <code>baserestrictinfo</code>。然而 PostgreSQL 在规划层面十分早熟地考虑到了 <code>JOIN</code> 的情境。特别是大名鼎鼎的<strong>嵌套循环连接（Nestloop Join）</strong>。</p>
+<p>试想这样一个场景：<code>A JOIN B ON A.val = B.id</code>。
+在这里，假如 B 是内表（被反复驱动扫描的那张表），如果只给 B 提前留一条无参扫描路径，那么无论 A 给什么，B 都得全扫，代价巨大！但如果能把 <code>A.val</code> 作为一个**传递在途的变量（Parameter）**硬塞给 B，并在 B 的底层进行索引前置判断呢？</p>
+<ul>
+<li>在 PG 中，这被称为<strong>参数化路径 (Parameterized Path)</strong>。</li>
+<li><code>PG</code> 优化器引入了专门的机制：<code>ParamPathInfo</code>（参数化路径信息）。在 <code>create_index_paths</code> 时，优化器不仅仅只生成针对 B 自己过滤的一套独立路径；它还会“未雨绸缪”地去扫一眼连接缓存区，看 B 跟别人连接时能不能借助从别人那传过来的等值条件利用 B 自己的索引！</li>
+<li>如果有，PG 会生成附带 <code>lateral_relids</code>（依赖哪些外部基表）标记的特殊索引扫描，它具有更微弱甚至为 0 的单独执行可行性，但这将会是外层 NestLoop 构建极低代价算法的绝杀神兵。LATERAL 语法的基石也是借由这一机制发扬光大的。</li>
+</ul>
+<hr>
+<h2 id="5-路径的残忍角斗场pruning-与-add_path"><a class="header" href="#5-路径的残忍角斗场pruning-与-add_path">5. 路径的残忍角斗场：Pruning 与 <code>add_path</code></a></h2>
+<p>经过上面一番狂轰滥炸式的推演探索，无论是谁，都会为哪怕一个简单的表构建出几十种奇形怪状的 Path（SeqScan, IndexScan使用索引 X, 使用索引 Y, Bitmap组合，并行…）。</p>
+<p>为了防止随后引发指数级别的内存溢出和连接组合爆炸（Path Explosion），优化器必须随时修建多余的枝叶——<strong>路径剪枝（Path Pruning）</strong>。</p>
+<p>所有的扫描路径都不会直接插入 <code>RelOptInfo-&gt;pathlist</code> 的尾巴，而是必须经过唯一的“角斗场保安”门卫函数： <strong><code>add_path(RelOptInfo *parent_rel, Path *new_path)</code></strong>。</p>
+<p><code>add_path</code> 内蕴含了一套非常精彩的淘汰机制，遵循类似于帕累托最优（Pareto Optimality）的法则。
+当新生成的 Path 来试图登记入册时，它必须和 <code>pathlist</code> 现存的老家伙们逐一比较：</p>
 <ol>
-<li>创建一个 <code>SeqScan</code> 路径（作为保底）。</li>
-<li>查找所有可用的索引。</li>
-<li>对于每个索引，评估是否可以使用（检查 WHERE 条件是否匹配索引列）。</li>
-<li>如果可用，创建 <code>IndexScan</code> 或 <code>BitmapScan</code> 路径。</li>
-<li>将所有生成的路径添加到 <code>RelOptInfo-&gt;pathlist</code> 中。</li>
+<li><strong>代数对比（Cost Fudge）</strong>：如果新路径的 Startup 代价（<code>startup_cost</code>，流式吐出第一行需要的初始代价，有利于 Limit 处理）和 Total 代价（<code>total_cost</code>）都一致地高于某个老路径，那从纯纸面实力来看，新路径就是个废物。（PG 会引入大约 <code>1e-10</code> 级别的 <code>fuzz</code> 模糊乘数来应对浮点数舍入不确定性误差）。</li>
+<li><strong>排序特征免死金牌 (Pathkeys) <strong>：这是 PG Planner 非常精妙的一击。如果新老两套路老代价小，新代价巨高，但老的是杂乱无章出来的结果，而新路径（比如恰好使用了按键值 B-Tree 索引）附带上了与上一层节点所需的 <code>ORDER BY</code> 契合的输出天然排序特征（<code>pathkeys</code>），那么新路径就</strong>不能被单纯按价抛弃</strong>！因为它由于免去了上层做外置大数据量排序（明文的显式 Sort 节点）而变相立功，此时它会与老路径被<strong>全数并存保留</strong>入名录。</li>
 </ol>
-<h2 id="pruning-剪枝"><a class="header" href="#pruning-剪枝">Pruning (剪枝)</a></h2>
-<p>在生成路径的过程中，优化器会利用 <code>add_path</code> 函数。该函数会比较新路径与现有路径。如果新路径“明显更差”（代价更高且没有更好的排序特性），则会被直接丢弃，不加入路径列表。</p>
+<p>最终，淘汰了那些各个维度（代价无优势、排列无收益）都一无是处的方案后，留存在 <code>rel-&gt;pathlist</code> 上的就是浓缩了最优解潜力、千锤百炼下来的基础扫描规划路径了。它们摩拳擦掌，即将在接下来的 Join 阶段互相重叠连结。</p>
 
                     </main>
 

@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>外连接消除 - 那个叫 Planner 的家伙在想什么？</title>
+        <title>外连接消除与无用连接移除 - 那个叫 Planner 的家伙在想什么？</title>
 
 
         <!-- Custom HTML head -->
@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-8651b419.js";
+            window.path_to_searchindex_js = "../searchindex-c1c8618a.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-00ebddb9.js"></script>
+        <script src="../toc-55afa917.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -174,43 +174,55 @@
 
                 <div id="mdbook-content" class="content">
                     <main>
-                        <h1 id="外连接消除-outer-join-elimination"><a class="header" href="#外连接消除-outer-join-elimination">外连接消除 (Outer Join Elimination)</a></h1>
-<p>外连接消除（Outer Join Elimination）是指在不改变查询语义的前提下，将 Outer Join（Left/Right/Full Join）转换为 Inner Join，或者完全移除该 Join。</p>
-<h2 id="转换原理"><a class="header" href="#转换原理">转换原理</a></h2>
-<h3 id="1-outer-join-转换为-inner-join"><a class="header" href="#1-outer-join-转换为-inner-join">1. Outer Join 转换为 Inner Join</a></h3>
-<p>当 Outer Join 的“空值生成端”（Null-generating side）受到一个“严格”（Strict）的过滤条件限制时，Outer Join 等价于 Inner Join。</p>
+                        <h1 id="外连接消除与无用连接移除-outer-join-elimination--join-removal"><a class="header" href="#外连接消除与无用连接移除-outer-join-elimination--join-removal">外连接消除与无用连接移除 (Outer Join Elimination &amp; Join Removal)</a></h1>
+<p>在经过了表达式级别的折叠与扁平化之后，PostgreSQL 优化器会尝试通过约束分析，尽可能精简查询树中的连接节点（Join Nodes）。精简的连接树不但执行效率高，同时也给了后续的动态规划/遗传算法更多排列组合的选择。</p>
+<p>这一步主要包含了两个阶段的优化：</p>
+<ol>
+<li><strong>外连接降级/消除 (reduce_outer_joins)</strong></li>
+<li><strong>无用连接移除 (remove_useless_joins)</strong></li>
+</ol>
+<h2 id="1-外连接降级的原理与意义-reduce_outer_joins"><a class="header" href="#1-外连接降级的原理与意义-reduce_outer_joins">1. 外连接降级的原理与意义 (<code>reduce_outer_joins</code>)</a></h2>
+<p><strong>源码位置</strong>：<code>src/backend/optimizer/prep/prepjointree.c</code>
+<strong>调用时机</strong>：它是由 <code>subquery_planner</code> 函数中调用的。</p>
+<p>外连接（Outer Join）通常会强制优化器遵循特定的连接顺序，因为 Nullable 一侧必须在关联后才能保留。<code>reduce_outer_joins</code> 的目的就是检查是否存在某些强有力的 <code>WHERE</code> 条件，使得原本的 Outer Join 可以退化为 Inner Join 甚至是 Anti Join。</p>
+<h3 id="11-两遍扫描机制-pass-1--pass-2"><a class="header" href="#11-两遍扫描机制-pass-1--pass-2">1.1 两遍扫描机制 (Pass 1 &amp; Pass 2)</a></h3>
+<p>为了减少不必要的递归，<code>reduce_outer_joins</code> 使用两阶段处理：</p>
 <ul>
-<li><strong>严格条件</strong>: 指当输入为 NULL 时，表达式结果为 NULL 或 False 的条件。例如 <code>WHERE t2.col &gt; 5</code>。</li>
-<li><strong>场景</strong>: <code>SELECT * FROM t1 LEFT JOIN t2 ON t1.id = t2.id WHERE t2.col &gt; 5;</code>
+<li><strong>Pass 1 (<code>reduce_outer_joins_pass1</code>)</strong>: 收集查询树底层的 <code>Relids</code>（涉及了哪些基础表），并快速标记哪些子树中<strong>真正包含外连接</strong>（<code>contains_outer</code>）。如果没有外连接，直接跳过整个复杂的分析。</li>
+<li><strong>Pass 2 (<code>reduce_outer_joins_pass2</code>)</strong>: 进入实际的检查和转换逻辑。</li>
+</ul>
+<h3 id="12-outer-到-inner-的降级"><a class="header" href="#12-outer-到-inner-的降级">1.2 Outer 到 Inner 的降级</a></h3>
+<p>其核心依靠提取过滤条件中的<strong>严格约束 (Strict Quals)</strong>。
+利用 <code>find_nonnullable_rels</code> 扫描 <code>WHERE</code> 子句。如果 <code>WHERE</code> 强制要求 Nullable Side 的某个引用列不能为空（比如 <code>LEFT JOIN B ON ... WHERE B.id &gt; 10</code>，当 B 补充 NULL 时，<code>NULL &gt; 10</code> 为 NULL/False 被淘汰），那么：</p>
 <ul>
-<li>在 Left Join 中，如果 t2 匹配不上，<code>t2.col</code> 会是 NULL。</li>
-<li><code>NULL &gt; 5</code> 为 NULL（即 False）。</li>
-<li>因此，所有 t2 补 NULL 的行都会被 WHERE 过滤掉。</li>
-<li>查询等价于 <code>SELECT * FROM t1 JOIN t2 ...</code>。</li>
+<li><strong>LEFT JOIN</strong> 可以安全地转换为 <strong>INNER JOIN</strong>。</li>
+<li><strong>RIGHT JOIN</strong> 可以安全地转换为 <strong>LEFT JOIN</strong> 然后内部翻转，或者直接转为 <strong>INNER JOIN</strong>。</li>
+<li><strong>FULL JOIN</strong> 可以根据两边约束的情况降级为 LEFT、RIGHT 或是 INNER JOIN。</li>
+</ul>
+<h3 id="13-outer-到-anti-的转化"><a class="header" href="#13-outer-到-anti-的转化">1.3 Outer 到 Anti 的转化</a></h3>
+<p>外连接不仅可以被降阶为内连接，有时还可以变成反连接。
+利用 <code>find_forced_null_vars</code> 检查 <code>WHERE</code> 是否有显式要求变元为 NULL 的约束（例如 <code>LEFT JOIN B ON ... WHERE B.id IS NULL</code>）。
+如果是这样，那么这个 Join 明确就是用来找“匹配不上的行”，代码中会将该 <code>JOIN_LEFT</code> 转换为 <strong><code>JOIN_ANTI</code></strong>。Anti Join 在执行器阶段具有更早熔断的高效特性。</p>
+<h2 id="2-无用连接移除-remove_useless_joins"><a class="header" href="#2-无用连接移除-remove_useless_joins">2. 无用连接移除 (<code>remove_useless_joins</code>)</a></h2>
+<p><strong>源码位置</strong>：<code>src/backend/optimizer/plan/analyzejoins.c</code>
+<strong>调用时机</strong>：它发生得晚一些，是在 <code>grouping_planner</code> -&gt; <code>query_planner</code> 的起始阶段，即准备构建底层路径（Scan / Join Paths）时进行。</p>
+<p>有时候我们连接了一张表，只是为了取个数据，但后来发现（由于视图展开、ORM 生成的过度复杂的 SQL 等原因）这张表输出的列根本没有任何用处，那我们能直接移除这个 JOIN 吗？
+如果这是一个 <code>LEFT JOIN</code>，并且满足某些严格的等价条件，就能做到。</p>
+<h3 id="21-移除的苛刻条件-join_is_removable"><a class="header" href="#21-移除的苛刻条件-join_is_removable">2.1 移除的苛刻条件 (<code>join_is_removable</code>)</a></h3>
+<p>要移除一个左连接的右表，必须同时满足以下苛刻条件：</p>
+<ol>
+<li><strong>没有列输出</strong>：Nullable Side（被连接的右表）的任何字段（包括 PlaceholderVars) 都<strong>没有</strong>被上层的 <code>TargetList</code>、<code>HAVING</code>、<code>ORDER BY</code> 引用（检查 <code>attr_needed</code> 集合）。</li>
+<li><strong>不改变左表的基数 (Cardinality)</strong>：这个最为关键。不能因为移除右表，导致原本左表匹配出多行的结果减少，或者原本膨胀的行数变少。因此右表的关联必须是<strong>最多匹配一行</strong>。
+<ul>
+<li>优化器会调用 <code>rel_is_distinct_for</code>。</li>
+<li>根据连接条件，判断右表在这些条件限制下是否呈现<strong>唯一性 (Unique)</strong>。</li>
+<li>这通常依赖于数据库中建立的<strong>唯一索引 (Unique Index)</strong> 或 <strong>主外键约束 (Foreign Key)</strong>，且连接符必须是可合并连接的等值运算符。</li>
 </ul>
 </li>
-</ul>
-<p>转换的好处是 Inner Join 的连接顺序更灵活（可以交换左右表），而 Outer Join 的顺序通常是固定的。</p>
-<h3 id="2-join-移除-join-removal"><a class="header" href="#2-join-移除-join-removal">2. Join 移除 (Join Removal)</a></h3>
-<p>如果连接的结果没有被使用，且连接操作不影响行数（Cardinality），则可以移除 Join。</p>
-<ul>
-<li><strong>场景</strong>: <code>SELECT t1.x FROM t1 LEFT JOIN t2 ON t1.id = t2.id;</code>
-<ul>
-<li>如果我们只查询 <code>t1</code> 的列。</li>
-<li>且 <code>t2.id</code> 是唯一的（Unique），或者说 <code>t1.id</code> 参照 <code>t2.id</code> 的外键存在。</li>
-<li>Left Join 保证了 <code>t1</code> 的每一行至少出现一次。</li>
-<li>如果 <code>t2</code> 端匹配唯一，则 <code>t1</code> 的行不会膨胀。</li>
-<li>此时可以移除 <code>t2</code> 的连接。</li>
-</ul>
-</li>
-</ul>
-<h2 id="源码分析"><a class="header" href="#源码分析">源码分析</a></h2>
-<p>核心函数：<code>reduce_outer_joins</code> (位于 <code>src/backend/optimizer/prep/prepjointree.c</code>)</p>
-<p>该函数在 <code>subquery_planner</code> 早期被调用。它通过分析 <code>WHERE</code> 子句和 <code>JOIN/ON</code> 子句中的约束条件（Qualifiers），判断是否满足“严格性”要求。</p>
-<ul>
-<li><strong>Full Join</strong>: 可以先降级为 Left 或 Right，再进一步降级为 Inner。</li>
-<li><strong>Left Join</strong>: 如果右表（Nullable side）有强过滤条件，降级为 Inner。</li>
-</ul>
+</ol>
+<h3 id="22-全局状态清理-remove_leftjoinrel_from_query"><a class="header" href="#22-全局状态清理-remove_leftjoinrel_from_query">2.2 全局状态清理 (<code>remove_leftjoinrel_from_query</code>)</a></h3>
+<p>如果这个无用连接成功被认定为可以移除，这绝不仅仅是在查询树里删掉一个节点这么简单。
+因为此时规划器已经构建了诸如 <code>RestrictInfo</code>、<code>EquivalenceClass</code>（等价类）甚至是各种 <code>PlaceHolderVar</code>。规划器必须倒查并清理由于移除了该表（及其 Relid，甚至其特有的 Outer Join Relid <code>ojrelid</code>）而受到关联的所有辅助结构，确保后续基于 DP（动态规划）产生的子集连接搜索不会引用到幽灵节点。</p>
 
                     </main>
 

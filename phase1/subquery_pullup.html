@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-8651b419.js";
+            window.path_to_searchindex_js = "../searchindex-c1c8618a.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-00ebddb9.js"></script>
+        <script src="../toc-55afa917.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -175,34 +175,55 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="子查询提升-subquery-pull-up"><a class="header" href="#子查询提升-subquery-pull-up">子查询提升 (Subquery Pull-up)</a></h1>
-<p>子查询提升（Subquery Pull-up）是 PostgreSQL 优化器中最重要的逻辑优化之一。它的主要目的是将子查询（Subquery）合并到父查询（Parent Query）中，从而将原本的层次化结构“扁平化”。</p>
-<h2 id="为什么要进行子查询提升"><a class="header" href="#为什么要进行子查询提升">为什么要进行子查询提升？</a></h2>
-<ol>
-<li><strong>增加连接顺序的选择空间</strong>: 如果保持子查询独立，优化器通常必须先优化子查询，再优化父查询，这限制了连接顺序（Join Order）。扁平化后，子查询中的表可以与父查询中的表自由结合，优化器可以探索更多的连接路径。</li>
-<li><strong>减少执行层级</strong>: 减少了执行器层面的函数调用和上下文切换开销。</li>
-</ol>
-<h2 id="哪些子查询可以被提升"><a class="header" href="#哪些子查询可以被提升">哪些子查询可以被提升？</a></h2>
-<p>主要处理 <code>FROM</code> 子句中的子查询（Subquery in FROM）。</p>
-<ol>
-<li>
-<p><strong>简单子查询 (Simple Subqueries)</strong>:</p>
+<p>子查询提升（Subquery Pull-up）是 PostgreSQL 优化器中最为核心的逻辑重写优化机制之一。它发生在规划器的预处理早期阶段。其根本目标是**“打破查询边界，扁平化查询树”**，使得父子查询能够融合在一起，从而大幅度扩展 Join Order（连接顺序）的搜索空间，并且减少执行层的嵌套开销。</p>
+<h2 id="1-背景与目标为何要提升"><a class="header" href="#1-背景与目标为何要提升">1. 背景与目标：为何要提升？</a></h2>
+<p>如果不进行提升，嵌套在 <code>FROM</code> 或者是 <code>WHERE</code> 子句中的子查询，在执行树上就会变成单独的 <code>SubqueryScan</code> 节点或是 <code>SubPlan</code> 操作（InitPlan/SubPlan）。
+这限制了优化器的能力：</p>
 <ul>
-<li>不包含 <code>GROUP BY</code>, <code>HAVING</code>, <code>LIMIT</code>, <code>OFFSET</code>, <code>DISTINCT</code>, 集合操作（UNION/INTERSECT/EXCEPT）或窗口函数的子查询。</li>
-<li>这类子查询可以直接合并，将其 <code>WHERE</code> 条件 AND 到父查询中。</li>
+<li><strong>黑盒隔离</strong>：父查询的表无法与子查询内部的表混合进行 Join Order 规划。</li>
+<li><strong>运行时开销</strong>：执行引擎在运算时需要频繁穿越执行计划的不同层级进行上下文切换或独立求解。</li>
 </ul>
-</li>
-<li>
-<p><strong>UNION ALL 子查询</strong>:</p>
+<p>因此，PostgreSQL 规划器在 <code>src/backend/optimizer/prep/prepjointree.c</code> 中，专门设计了两大核心路径来拆解各类“提升”。</p>
+<h2 id="2-sublink-提升pull_up_sublinks"><a class="header" href="#2-sublink-提升pull_up_sublinks">2. SubLink 提升：<code>pull_up_sublinks</code></a></h2>
+<p><code>SubLink</code> 通常指的是出现在 <code>WHERE</code> 或者 <code>JOIN/ON</code> 过滤条件中的子查询结构。
+优化器在 <code>subquery_planner</code> 一开始就会调用 <code>pull_up_sublinks()</code>。</p>
+<p>其核心递归函数 <code>pull_up_sublinks_qual_recurse</code> 会遍历条件，并根据 <code>SubLink</code> 的类型采取不同的提升策略。这依赖于几个关键转换函数：</p>
+<h3 id="21-any-sublink-convert_any_sublink_to_join"><a class="header" href="#21-any-sublink-convert_any_sublink_to_join">2.1 <code>ANY</code> SubLink (<code>convert_ANY_sublink_to_join</code>)</a></h3>
+<p>当遇到类似 <code>WHERE x.id = ANY (SELECT id FROM y)</code>（即 <code>IN (subquery)</code>）时：</p>
 <ul>
-<li>可以将 <code>UNION ALL</code> 扁平化为 Append 关系（Append Relation）。</li>
+<li>优化器会将其从 <code>WHERE</code> 条件中剥离出来，转化成与父查询的一张表的 <strong><code>JOIN_SEMI</code> (半连接)</strong>。</li>
+<li>对于常数数组 <code>IN (1, 2, 3)</code>，也会在此阶段通过 <code>convert_VALUES_to_ANY</code> 做尝试折叠化简。</li>
 </ul>
-</li>
+<h3 id="22-exists-sublink-convert_exists_sublink_to_join"><a class="header" href="#22-exists-sublink-convert_exists_sublink_to_join">2.2 <code>EXISTS</code> SubLink (<code>convert_EXISTS_sublink_to_join</code>)</a></h3>
+<p>当遇到 <code>WHERE EXISTS (SELECT 1 FROM y WHERE x.id = y.id)</code> 时：</p>
+<ul>
+<li>本质与 <code>ANY</code> 类似，这会被转化为一个 <strong><code>JOIN_SEMI</code> (半连接)</strong>。</li>
+<li>但是它进一步处理了带有 <code>NOT</code> 修饰的情况：如果是 <code>WHERE NOT EXISTS ( ... )</code>，在 PG 中会被直接转化为 <strong><code>JOIN_ANTI</code> (反连接)</strong>。这就允许优化器使用 Hash Anti-Join 等高效物理算子直接过滤数据。</li>
+</ul>
+<h2 id="3-subquery-提升pull_up_subqueries"><a class="header" href="#3-subquery-提升pull_up_subqueries">3. Subquery 提升：<code>pull_up_subqueries</code></a></h2>
+<p>区别于 <code>SubLink</code>，一般的 <code>Subquery</code> 主要指代的是出现在 <code>FROM</code> 子句里面的表源定义（如 <code>SELECT * FROM a JOIN (SELECT * FROM b) c ON ...</code>）。
+当处理完 <code>SubLink</code> 之后，<code>planner</code> 接着调用 <code>pull_up_subqueries()</code>，尝试将 FROM 下拉取出来的子查询给融会贯通。</p>
+<h3 id="31-简单子查询-is_simple_subquery--pull_up_simple_subquery"><a class="header" href="#31-简单子查询-is_simple_subquery--pull_up_simple_subquery">3.1 简单子查询 (<code>is_simple_subquery</code> / <code>pull_up_simple_subquery</code>)</a></h3>
+<p>怎样才叫一个“简单（Simple）”的子查询？</p>
+<ul>
+<li>它不能包含 <code>GROUP BY</code>、<code>HAVING</code>。</li>
+<li>不能包含 <code>LIMIT</code> / <code>OFFSET</code>。</li>
+<li>不能包含集合操作（<code>UNION</code>、<code>INTERSECT</code>、<code>EXCEPT</code>）。</li>
+<li>不能包含顶层聚合函数或是窗口函数。</li>
+</ul>
+<p>如果是简单子查询，<code>pull_up_simple_subquery()</code> 将大显身手：</p>
+<ol>
+<li>它将子查询的 <code>FromExpr</code> 的儿子全部并入到当前层级的 <code>FromExpr</code> 树里。</li>
+<li>剥除该子查询外层包装。</li>
+<li>利用 <code>pullup_replace_vars</code> 构建或替换那些需要保持上下文独立性的变量引用（如果在 Grouping Set 里，有时还要为其包装一层 <code>PlaceHolderVar</code>）。</li>
 </ol>
-<h2 id="特殊情况group-by-子查询的提升"><a class="header" href="#特殊情况group-by-子查询的提升">特殊情况：GROUP BY 子查询的提升</a></h2>
-<p>在某些特定条件下，包含 <code>GROUP BY</code> 的子查询也可以被提升，但这通常涉及到更复杂的转换，如 <strong>Aggregate Pushdown</strong> 或 <strong>Join Removal</strong>。PostgreSQL 支持将某些 Outer Join 中的 Group By 子查询提升，但需要保证 Join Key 是 Unique 的。</p>
-<h2 id="源码分析"><a class="header" href="#源码分析">源码分析</a></h2>
-<p>核心函数：<code>pull_up_subqueries</code> (位于 <code>src/backend/optimizer/prep/prepjointree.c</code>)</p>
-<p>该函数递归地遍历 Query Tree 的 <code>jointree</code>，查找 <code>RangeTblRef</code> 指向的子查询。如果满足提升条件，则修改 <code>jointree</code> 结构，将子查询的 <code>FromExpr</code> 合并上来。</p>
+<h3 id="32-简单-union-all-的扁平化-pull_up_simple_union_all"><a class="header" href="#32-简单-union-all-的扁平化-pull_up_simple_union_all">3.2 简单 UNION ALL 的扁平化 (<code>pull_up_simple_union_all</code>)</a></h3>
+<p>对于 <code>FROM (SELECT x FROM a UNION ALL SELECT x FROM b)</code> 这样的集合操作：
+如果没有任何排序 <code>ORDER BY</code>、没有 <code>LIMIT</code>，并且是 <code>UNION ALL</code> （不用去重），优化器会调用 <code>is_simple_union_all</code>。
+它会把这颗 <code>UNION ALL</code> 子树彻底压平，转化为一系列的追加关系 (<code>AppendRelInfo</code>)。这就将集合操作融化成底层扫描层级的简单 <code>Append</code>，而不用执行繁重的 Subquery 拼接。</p>
+<h3 id="33-lateral-子查询的修补"><a class="header" href="#33-lateral-子查询的修补">3.3 LATERAL 子查询的修补</a></h3>
+<p>在 PostgreSQL 支持了 <code>LATERAL</code> 之后，提取时还涉及 <code>LATERAL</code> 跨层依赖参数。
+如果发生 <code>pull_up_subquery</code> 且原本有 <code>LATERAL</code> 引用，代码会通过 <code>IncrementVarSublevelsUp</code> 等复杂的方法调整 Vars 的层级深度（Sublevel），并借由 <code>CombineRangeTables</code> 重组合并底层的 RangeTable 中记录被依赖的状态。这一机制对关联子查询能够被最终压平至关重要。</p>
 
                     </main>
 
