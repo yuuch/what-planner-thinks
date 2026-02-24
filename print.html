@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-c1c8618a.js";
+            window.path_to_searchindex_js = "searchindex-803d5e0b.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-55afa917.js"></script>
@@ -887,90 +887,91 @@ standard_planner(Query *parse, const char *query_string, int cursorOptions,
 </code></pre>
 <p>每种具体的路径（如 <code>IndexPath</code>, <code>NestPath</code>）都继承自 <code>Path</code> 结构体，并增加特定的字段。</p>
 <div style="break-before: page; page-break-before: always;"></div>
-<h1 id="等价类-equivalence-classes-ec-深潜"><a class="header" href="#等价类-equivalence-classes-ec-深潜">等价类 (Equivalence Classes, EC) 深潜</a></h1>
-<p>在 PostgreSQL 优化器的宏伟蓝图中，无论是进行单表扫描条件过滤，还是复杂的 Join 规划寻找匹配路径，亦或者是 Order By 寻找可用排序索引，底层的心跳都离不开一个至高无上、贯穿全局且极其精妙的抽象概念——<strong>等价类 (Equivalence Classes, 简称 EC)</strong>。</p>
-<p>由于关系型数据库中存在着大量形如 <code>A = B AND B = C AND C = 5</code> 这样的连环连接与过滤谓词。如果优化器只做字面（Syntax）意义上的表象树解析，它就只能机械地做 A 与 B 关联、B 与 C 关联。
-而一旦系统引入了“等价类”这一基于离散数学“传递闭包（Transitive Closure）”的等价集合抽象机制，优化器就能犹如开启了上帝视角一般，瞬间在内聚的数据世界中刻画出一张全连通的无向图。它将毫不费力地推断出 <code>A、B、C</code> 同属一个命运共同体，且它们运算时的真值必定全为常数 <code>5</code>！</p>
-<p>本文结合 PostgreSQL 18.1 最新源码（核心代码落座于 <code>src/backend/optimizer/path/equivclass.c</code> 与 <code>src/include/nodes/pathnodes.h</code>），对这个常被外围技术博文一笔带过、却在 PG 底层翻云覆雨的“无名架构英雄”进行庖丁解牛般的硬核拆解。</p>
+<h1 id="等价类-equivalence-classes-ec-深度剖析"><a class="header" href="#等价类-equivalence-classes-ec-深度剖析">等价类 (Equivalence Classes, EC) 深度剖析</a></h1>
+<p>在 PostgreSQL 优化器的世界里，无论是对单表扫描条件的过滤，还是在复杂的 Join 规划中寻找匹配路径，亦或是处理 <code>ORDER BY</code> 时查找可用的排序索引，其最底层都离不开一个贯穿全局、至关重要且极其精妙的抽象概念——<strong>等价类 (Equivalence Classes, 简称 EC)</strong>。</p>
+<p>由于关系型数据库的查询语句中经常会出现大量相互关联的过滤条件，例如 <code>A = B AND B = C AND C = 5</code>。如果优化器仅仅从语法层面对抽象语法树进行机械的解析，它就只能识别出 A 与 B 有关、B 与 C 有关。</p>
+<p>然而，一旦系统引入了“等价类”这个基于离散数学中“传递闭包（Transitive Closure）”概念的抽象机制，优化器就仿佛开启了“上帝视角”。它能够在瞬间在这些相互关联的数据关系中，刻画出了一张全图连通的无向图。它能毫不费劲地推断出 <code>A、B、C</code> 这三个字段在逻辑上是完全等价的命运共同体，而且在查询执行时，它们实际的数值必定都等于常量 <code>5</code>！</p>
+<p>本文结合 PostgreSQL 18.1 的最新源码（其核心逻辑实现在 <code>src/backend/optimizer/path/equivclass.c</code> 与 <code>src/include/nodes/pathnodes.h</code> 中），对这个经常被外围技术文章一笔带过，但在 PG 底层却发挥着中流砥柱作用的“幕后英雄”进行一次抽丝剥茧般的硬核拆解。</p>
 <hr>
-<h2 id="1-原点equivalenceclass-的生命周期与无向图抽象"><a class="header" href="#1-原点equivalenceclass-的生命周期与无向图抽象">1. 原点：EquivalenceClass 的生命周期与无向图抽象</a></h2>
-<p>在 SQL 到达优化器被摊平拆解后（例如在 <code>initsplan.c</code> 中的 <code>distribute_qual_to_rels</code> 路由节点中），系统遇到 <code>WHERE</code> 或 <code>ON</code> 条件中的各种二元布尔表达式时，便开始了它的猎杀判断。</p>
-<p>当规划网络中捕获到一个诸如 <code>X = Y</code> 的表达式时（严格地说，是该操作符使用了能够支持 B-Tree 可排序能力、且在 <code>pg_amop</code> 目录元数据中被声明了具有哈希相容与等价语义的 <code>=</code> 操作符的 <code>RestrictInfo</code>），它并不会简简单单把这个连词作为普通的下推过滤处理方案，而是立刻中断通用流程，转而触发一个专属的神圣构建函数：<strong><code>process_equivalence()</code></strong>。</p>
-<h3 id="11-从离散条件到传递闭包的疯长"><a class="header" href="#11-从离散条件到传递闭包的疯长">1.1 从离散条件到传递闭包的疯长</a></h3>
-<p><code>process_equivalence(PlannerInfo *root, RestrictInfo **p_restrictinfo, bool below_outer_join)</code> 的核心职责是由点到面的进行拓扑网编织：</p>
+<h2 id="1-源起等价类的生命周期与无向图抽象"><a class="header" href="#1-源起等价类的生命周期与无向图抽象">1. 源起：等价类的生命周期与无向图抽象</a></h2>
+<p>当一条 SQL 语句经过解析和重写，形成查询树到达优化器被展开处理后（例如在 <code>initsplan.c</code> 中的 <code>distribute_qual_to_rels</code> 阶段），系统在遇到 <code>WHERE</code> 或 <code>JOIN/ON</code> 子句中的各种二元布尔表达式时，便开始寻找等价关系的蛛丝马迹。</p>
+<p>当规划器捕获到一个形如 <code>X = Y</code> 的表达式时（严格来说，这里的 <code>=</code> 操作符必须能够在 B-Tree 索引中支持排序，并且在 <code>pg_amop</code> 系统表中被声明具有哈希相容性和等价语义，通常作为 <code>RestrictInfo</code> 存在），系统并不会简简单单把它当作一个普通的过滤条件随手下发。相反，系统会立刻暂停通用处理流程，转而触发一个专属的核心构建函数：<strong><code>process_equivalence()</code></strong>。</p>
+<h3 id="11-从离散条件到传递闭包的野蛮生长"><a class="header" href="#11-从离散条件到传递闭包的野蛮生长">1.1 从离散条件到传递闭包的野蛮生长</a></h3>
+<p><code>process_equivalence(PlannerInfo *root, RestrictInfo **p_restrictinfo, bool below_outer_join)</code> 函数的核心职责就是将一个个零散的点，编织成一张互相连通的拓扑网：</p>
 <ol>
-<li><strong>新建与收容</strong>：假如目前是白纸状态，系统见到了首个等式 <code>X = Y</code>。它将立刻调用对象分配器，新建一个 <code>EquivalenceClass</code> (EC) 实例对象，并将 <code>X</code> 和 <code>Y</code> 这两个实体表达式各自包装为 <code>EquivalenceMember</code> 成员塞入集合链表。</li>
-<li><strong>顺藤摸瓜的扩容</strong>：系统读到了下一个紧随的谓词 <code>Y = Z</code>。进入代码流时，逻辑引擎开始检视手中已有的所有 EC 集合，它骇然发现表达式 <code>Y</code> 已经栖身于之前建立的某一个 EC 之中了。此时系统不再愚蠢地去新建集合对象，而是利用传递律边界直接将新词条 <code>Z</code> 丢进这个包含 <code>X, Y</code> 的已有等价类里，形成包含 <code>X, Y, Z</code> 的更广袤集合。</li>
-<li><strong>两个平行宇宙的大碰撞大合并</strong>：复杂查询中极为常见的名场面。假设系统在处理某颗子查询子树时推断产生了一个局部 EC <code>{A, B}</code>。而在处理外围结构时得到了另一套 EC <code>{C, D}</code>。此时，主查询里突然暴露了一条跨域联通管线 <code>B = C</code>。
-见证奇迹的合并时刻上演！优化器在搜寻中直接撞见了这两个独立的集装箱，立刻拉起极其底层的操作，将两者做物理级别的并查集糅合（Union Find Set），这二者瞬间归化为一个横跨超大子树的超级等价族：<code>{A, B, C, D}</code>！</li>
+<li><strong>新建与收容</strong>：假设当前优化器是一张白纸，系统第一次遇到了等式 <code>X = Y</code>。它会立刻分配内存，创建一个新的 <code>EquivalenceClass</code> (EC) 实例对象，并将 <code>X</code> 和 <code>Y</code> 这两个表达式各自包装成 <code>EquivalenceMember</code> (成员) 存放进该集合的链表中。</li>
+<li><strong>顺藤摸瓜的扩容</strong>：紧接着，系统读取到了下一个谓词 <code>Y = Z</code>。在处理这段逻辑时，引擎会先去检索当前已经存在的所有等价类集合。它会敏锐地发现表达式 <code>Y</code> 已经存在于刚刚建立的某个 EC 中了。此时，系统不会再去重复建构新的集合，而是利用等价的传递性，直接把新出现的成员 <code>Z</code> 加入到包含 <code>X, Y</code> 的已有等价类里。于是，这个集合扩充成了 <code>{X, Y, Z}</code>。</li>
+<li><strong>不同集合的合并</strong>：在复杂的查询中，这种情况非常普遍。假设系统在处理某一侧的表连接时，推断出了一个局部的等价类 <code>{A, B}</code>。而在处理查询的另一部分时，得到了另一个局部的等价类 <code>{C, D}</code>。此时，主查询抛出了一个跨越这两侧的连接条件 <code>B = C</code>。
+见证优化的合并时刻上演了！优化器在检索时发现了这两个相互独立的集合片段，于是立刻执行底层的并查集 (Union Find Set) 操作，将这两组集合做物理级别上的融为一体。瞬间，它们合并成了一个跨越整颗查询大树的超级等价族：<code>{A, B, C, D}</code>！</li>
 </ol>
-<p>通过这种永无休止的自我动态融合扩张逻辑，原本在文本解析树层面仅只是一条条零散冰冷字符串的 Where 条件，在 PG 的中心内存池内被高度升维化成了四通八达、极具信息密度的“强连通分量”。</p>
+<p>通过这种不断进行自我融合与扩张的动态打法，原本在语法树上只是零散字符排列组合的 <code>WHERE</code> 条件语句，在 PostgreSQL 的核心内存池中，被升维成了四通八达、信息密度极高的数据依赖拓扑网络。</p>
 <hr>
 <h2 id="2-探视深渊核心数据结构剖析"><a class="header" href="#2-探视深渊核心数据结构剖析">2. 探视深渊：核心数据结构剖析</a></h2>
-<p>为了彻底明晓这个体系，我们需要直视 <code>pathnodes.h</code> 这个统御千层路径的头文件，看穿这些隐秘结构体真实的 C 语言身躯。</p>
-<h3 id="21-the-equivalenceclass-统御类母体"><a class="header" href="#21-the-equivalenceclass-统御类母体">2.1 The <code>EquivalenceClass</code> (统御类母体)</a></h3>
-<p>它是整个等号抽象域的总容器，掌控并指引着优化器的动作大纲。</p>
+<p>为了彻底弄懂这个体系，我们需要查阅 <code>pathnodes.h</code> 这个统御着无数路径信息的头文件，去看看这些结构体在 C 语言层面真实的定义样貌。</p>
+<h3 id="21-统御母体equivalenceclass"><a class="header" href="#21-统御母体equivalenceclass">2.1 统御母体：<code>EquivalenceClass</code></a></h3>
+<p>它相当于等价操作的总容器，掌控并指引着优化器的判断大纲。</p>
 <pre><code class="language-c">typedef struct EquivalenceClass
 {
     NodeTag     type;
-    List       *ec_opfamilies;   /* 极重要的地标：这个等价类所绑定的 B-Tree opfamilies 集。*/
-                                 /* 若没有底层声明等价传递性的 OpFamily 支持，整个推导直接非法。如 int4_ops */
-    Oid         ec_collation;    /* 字符排序规则 Collation (解决比如法语词典比较和本地词典比较等号非通货的基础问题) */
-    List       *ec_members;      /* EquivalenceMember 列表：里面躺着属于这个家庭的所有表列、常量及子计算 */
-    List       *ec_sources;      /* 回源指针：生成这个巨无霸图论集合的最初的所有“原罪” RestrictInfo 谓词子句本身 */
+    List       *ec_opfamilies;   /* 极重要的地标：这个等价类所绑定的 B-Tree 操作符族。*/
+                                 /* 如果没有支持底层等价传递性的 OpFamily（比如 int4_ops），整个推导就不合法。 */
+    Oid         ec_collation;    /* 字符排序规则 Collation (用于解决法语排序和中文排序等号判定不通用的基础问题) */
+    List       *ec_members;      /* EquivalenceMember 列表：里面存放着属于这个家族的所有表列、常量及子计算 */
+    List       *ec_sources;      /* 回源指针：生成这个大图论集合最初的、最“原汁原味”的 RestrictInfo 谓词本身 */
     List       *ec_derives;      /* 这是由主引擎向外辐射衍生成的用于各级 Join 匹配的约束条件包 */
-    Relids      ec_relids;       /* 这个集合内的属性总共横跨涉及到了哪些基本计算表(RTE 的集合 Bitmap) */
+    Relids      ec_relids;       /* BitMap：这个集合内所有的属性涵盖跨越了哪些具体的表 (RTE) */
     bool        ec_has_const;    /* 魔神之眼：哪怕有上万个子表达式，只要这个集合里混入了一个常量值，它就变成了 true！ */
-    bool        ec_has_volatile; /* 是否存在易失态不稳定函数成员，如果是将拒绝下发合并... */
+    bool        ec_has_volatile; /* 是否存在易失的 (Volatile) 不稳定函数成员？如果是，则拒绝下发相关合并逻辑 */
     /* ... operations info ... */
 } EquivalenceClass;
 </code></pre>
-<h3 id="22-the-equivalencemember-下位个体细胞"><a class="header" href="#22-the-equivalencemember-下位个体细胞">2.2 The <code>EquivalenceMember</code> (下位个体细胞)</a></h3>
-<p>包裹在这个大家庭里的一个个具体运算因子。谁能上位成为成员？它常常是普通的 <code>Var</code>(表某列的提取节点)、也可以是一整个 <code>FuncExpr</code>，或者是 <code>RelabelType</code>（类型强转映射包装等）。</p>
+<h3 id="22-下位个体equivalencemember"><a class="header" href="#22-下位个体equivalencemember">2.2 下位个体：<code>EquivalenceMember</code></a></h3>
+<p>包裹在这个大家庭里的就是一个个具体的运算因子。什么样的节点能成为成员？通常是普通的 <code>Var</code> (代表表里的某一列)，也可能是完整的一个函数运算式 <code>FuncExpr</code>，亦或是 <code>RelabelType</code>（类型强转映射操作封装等）。</p>
 <pre><code class="language-c">typedef struct EquivalenceMember
 {
     NodeTag     type;
-    Expr       *em_expr;         /* 这个成员真正的可执行表达式结构树，比如 Var(T1.A) */
-    Relids      em_relids;       /* 该独立表达式依赖着哪些底层级表(对于推断 Join 的上下级顺序异常关键) */
+    Expr       *em_expr;         /* 这个成员实际对应的可执行表达式结构树，比如 Var(T1.A) */
+    Relids      em_relids;       /* 该独立表达式依赖着哪些底层级表 (这对于推断 Join 的上下级顺序异常关键) */
     Relids      em_nullable_relids;
-    bool        em_is_const;     /* 核心标志位：这个个体不是普通列运算，它是一个带着字面具体常量实体的值吗？ */
+    bool        em_is_const;     /* 核心标志位：这个个体不是普通的列，它是一个带着具体化常量的字面值吗？ */
     bool        em_is_child;     /* 对于分区表操作尤其重要，用来指代基于分区拆分后的细分子节点 */
-    Oid         em_datatype;     /* 该表达式求出该值的底层类型，用于强校验匹配 */
+    Oid         em_datatype;     /* 该表达式求出该值的底层数据类型，用于强制校验匹配 */
 } EquivalenceMember;
 </code></pre>
-<h3 id="23-ec_has_const-与常量下沉宇宙的碾压特权"><a class="header" href="#23-ec_has_const-与常量下沉宇宙的碾压特权">2.3 <code>ec_has_const</code> 与常量下沉宇宙的碾压特权</a></h3>
-<p>所有的 SQL 重构教科书中对于条件极简和优化的最底层源泉便依赖于常量的处理能力。
-在 PostgreSQL EC 体系里，如果某一个具体的 Member 被判定设置了 <code>em_is_const = true</code>（比方说，业务在海量 SQL 某句不起眼的位置写了 <code>T1.A = 100</code>，100 被解析为一个带有 const 恒态属性的成员），整个包裹它的巨大 <code>EquivalenceClass</code> 就像是被真理光环彻底镀上了金：<code>ec_has_const</code> 指示器被瞬间置为 <code>true</code>。</p>
-<p>因为一旦优化引擎洞穿了集合 <code>{A, B, C, D}</code> 在底层算术流转中其实“毫无计算意义”，这群花里胡哨的名词全部都在物理世界里具象且<strong>绝对等同于常量 <code>100</code></strong>，PG 后来无论行至计划图谱的哪个偏远深海角落——甚至挖到诸如多路 Join、子查询下探内圈、或者是极为关联的底层并发索引扫描处，由于 EC 引用指针的存在，它都能将针对大字段比值的过滤消耗，瞬间降魔般替换或叠加为“径直奔向硬盘找寻 <code>100</code> 的确切记录”以及对其它成员强行赋常参数！
-这即是传说中令 Cost-Based Optimizer 代价优化器引以为傲、威力无比的 <strong>基于关系映射传递的横向常量下推 (Constant Propagation &amp; Pushdown)</strong> 技术中枢基座！</p>
+<h3 id="23-ec_has_const-与常量下推的碾压式特权"><a class="header" href="#23-ec_has_const-与常量下推的碾压式特权">2.3 <code>ec_has_const</code> 与常量下推的碾压式特权</a></h3>
+<p>所有介绍 SQL 重写技巧和优化的教科书中，最底层的能力源泉往往都依赖于对常量的处理机制。
+在 PostgreSQL 的等价类体系里，如果某一个具体的 Member 被判定设置了 <code>em_is_const = true</code>（比方说，业务在一段冗长的 SQL 中写了 <code>T1.A = 100</code>，100 被解析为一个带有 const 恒态属性的成员）。那一瞬间，整个包裹它的巨大的 <code>EquivalenceClass</code> 就像是被真理光环彻底附魔了：顶层的 <code>ec_has_const</code> 标志位会被直接置为 <code>true</code>。</p>
+<p>因为一旦优化引擎确认了集合 <code>{A, B, C, D}</code> 在底层算术流转中其实“毫无实际变量计算意义”，这群看似花里胡哨的变量名词，在物理世界全都被具象化且<strong>绝对等同于常量 <code>100</code></strong>！
+PG 在后序规划中无论走到哪一步的算子——无论是多路 Join 进行哈希探测、深层子查询往内圈下推、还是做非常底层的并发索引扫描。只要能读到这个等价类的引用指针，它都能将针对这些巨大字段之间的动态匹配消耗，瞬间点石成金般转换为“直接去磁盘上找寻常数值 <code>100</code> 的确切记录”。并强制给其他关联成员赋予这个常量参数。
+这便是深究 Cost-Based Optimizer (代价优化器) 中为何总是引以为傲的最高维武器——<strong>基于关系映射传递的横向常量下推 (Constant Propagation &amp; Pushdown)</strong> 技术中枢基座！</p>
 <hr>
-<h2 id="3-隐式横跨限制项的衍生魔法-implied-equalities"><a class="header" href="#3-隐式横跨限制项的衍生魔法-implied-equalities">3. 隐式横跨限制项的衍生魔法 (Implied Equalities)</a></h2>
-<p>空手持有一把神器 EC 其实毫无建树，真正让 PG 从其它那些老旧、依靠呆滞规则运作的古董级 RDBMS 优化器引擎中脱颖而出大放异彩的，是位于 <code>equivclass.c</code> 里的魔法工坊： <strong><code>generate_implied_equalities()</code></strong> 函数群落族。</p>
+<h2 id="3-隐式衍生约束的魔法-implied-equalities"><a class="header" href="#3-隐式衍生约束的魔法-implied-equalities">3. 隐式衍生约束的魔法 (Implied Equalities)</a></h2>
+<p>光是建立起一套等价类模型其实并没有用，真正让 PostgreSQL 从众多依靠死板规则化干预行事的传统关系型数据库引擎中脱颖而出大放异彩的，是深藏在这背后于 <code>equivclass.c</code> 里的魔法工坊： <strong><code>generate_implied_equalities()</code></strong> 等一系列生成衍生约束条件的函数调用。</p>
 <h3 id="31-跨表谓词下穿衍生机制"><a class="header" href="#31-跨表谓词下穿衍生机制">3.1 跨表谓词下穿衍生机制</a></h3>
-<p>举一个非常具象的示例。假设有前端 ORM 机器胡乱拼凑、生成了这么一句呆傻但普遍存在的检索：
+<p>举一个非常具象的例子。假设有应用前端依靠 ORM 代码生成器胡乱拼凑出了这么一句常见的检索：
 <code>SELECT * FROM T1, T2, T3 WHERE T1.id = T2.id AND T2.id = T3.id AND T1.id = 99;</code></p>
-<p>试想在执行计划构建的破晓之初，T2 和 T3 仍然处于独立扫描状态构想下。如果在传统的非闭包体系里，优化器在扫描 T3 这张拥有千万级数据的表时是异常痛苦无助的——因为它不知道 T3.id 到底要搜谁。系统除了默默承受一场代价几百万的恐怖全表堆数据 SeqScan 扫描以外别无选择，然后把读完了全部硬盘后的数据传送到上层参与那虚空慢如蜗牛的 Join 过滤去。</p>
-<p>但在 PG 有了强有力的 <code>generate_implied_equalities_for_column()</code> 函数机制背书下。由于 <code>T1.id</code>, <code>T2.id</code>, <code>T3.id</code>, 以及神祇般的那个字面常量值 <code>99</code> 全部落网被收容进入了唯一的超级大联盟等价类里。当 <code>query_planner</code> 调度进入评估处理最基础最底层、属于扫描 <code>T3</code> 这张表的最佳路径 (最佳 Path) 时。代码会拿着 <code>T3</code> 表所独有的的 Relids 前去向这个巨大中央等价类发问寻求祈祷：
-“请问在这里面，有没有只由我 T3 一人就可以单独享用、不用外包给上层运算的隐式提成条件（Implied Restrict)？”</p>
-<p>EC 模块看到自身有着真理化身常量 <code>99</code> ，并且该寻宝者成员库里带有 <code>T3.id</code>。系统这如同虚空捏造出了一把惊雷破魔巨刃——变出了一个物理上不存在但在数学上绝对确凿的过滤条件：<code>T3.id = 99</code>！
-随后，这个崭新衍生出的参数被当作为限制下发，立刻强行绑死作为了 T3 自己的单表扫描专属谓词。原本 T3 即将遭遇的那一波漫长的百万行 SeqScan 后再用 HashJoin 与前世诸表纠缠的恶劣命运烟消云散；直接被优化器评估认定降级为了一个超轻微代价、甚至只需要在毫秒级纳秒级内利用磁盘 IO 完成针孔定位的极强操作：<code>Index Scan (T3.id = 99)</code>。引擎的加速狂啸在这一刻便拉开了序幕。</p>
-<h3 id="32-强前置互鉴与阻止星系爆炸"><a class="header" href="#32-强前置互鉴与阻止星系爆炸">3.2 强前置互鉴与阻止星系爆炸</a></h3>
-<p>退一万步，哪怕在这条闭包链上我们完全找寻不出常委常量的存在，而只是普通跨域的集合 <code>{T1.A, T2.B, T3.C}</code>。当优化器由于基于选择率决定尝试去赌一把“先将 <code>T1</code> 和 <code>T3</code> 大战连表做 <code>T1 JOIN T3</code> （因为 T1与 T3 表极小）”，尽管你回头审视那极为脑残的业务级原生传入的 SQL 脚本根本找不到写出了二者的丝毫正交连通性。但神圣强大的 EC 抽象集合模块会一视同仁。由于它坐拥此三子，且知晓相互依仗等价，通过同样的衍生派发操作，它极度从容地给出了一条隐含联姻：生成了新过滤子句 <code>T1.A = T3.C</code>，并将它强压成这二者结合的连接条件（Join Qual）！</p>
-<p>这几乎完美不可破地从根源上截断并化解了一场原本必然演变为笛卡尔全铺积惨剧的查询银河星光爆炸。在这个层面去宏观凝视，庞大晦涩的所谓 等价类 (EC)，其存在的意义与其说是提供语法变换，<strong>不如说是为了阻止底层搜索决策大厦崩塌而矗立起用以来指引降维、铺设最优计算捷径的最高神圣路标塔。</strong></p>
+<p>试想一下，在执行计划刚刚起草、<code>T2</code> 和 <code>T3</code> 还处于独立构思如何单表扫描的早期阶段。如果是在传统的非闭包体系引擎中，优化器要去扫描拥有千万数量级的 <code>T3</code> 表时是非常痛苦无助的——因为它压根不知道 <code>T3.id</code> 到底要去搜寻谁。它除了默默去承受代价高昂的 <code>SeqScan</code> 顺序全表扫描硬盘以外毫无办法，然后必须把读出来的成百上千兆数据生硬地抛到上层参与后面缓慢如蜗牛的 Join 过滤匹配。</p>
+<p>但在 PostgreSQL 强大的 <code>generate_implied_equalities_for_column()</code> 函数机制背书中。由于 <code>T1.id</code>, <code>T2.id</code>, <code>T3.id</code> 以及那个常量值 <code>99</code> 全部落网被收容进入了唯一的巨型全域等价类。当 <code>query_planner</code> 调度到底层需要评估扫描 <code>T3</code> 这张表的最佳访问路径 (Paths) 时，代码会拿着 <code>T3</code> 表所独有的 <code>Relids</code> 当作钥匙，去向这个巨型等价中心发问祈求：
+“请问在这里面，有没有哪怕仅能由我 <code>T3</code> 一张表就可以单独享受匹配、不需要往上走依靠关联运算的隐性过滤推演条件（Implied Restrict)？”</p>
+<p>等价类模块通过遍历，敏锐发觉自身不仅有常量 <code>99</code>，并且还有请求者的 <code>T3.id</code>。于是系统这如同虚空捏造出了一把尚方宝剑——自动凭空变出了一条原本在文字层面并不存在、但是在数学上绝对站得住脚的确凿过滤条件：<code>T3.id = 99</code>！
+随后，这个崭新生成的过滤条件参数会被作为推导限制被即刻下发，绑定成为了 <code>T3</code> 自己的单表专属扫描谓词。原本 <code>T3</code> 即将遭遇的那一波漫长的百万行 SeqScan 以及在内存中同前面表死磕合并运算的恶劣命运随之烟消云散。这一动作直接将其成本评估定性为了超轻微代价量级：不仅可以走索引，而且只需要在极其短暂的时间内针孔定位完成 I/O 的顶级访问模式——<strong><code>Index Scan (T3.id = 99)</code></strong>。优化器提速狂飙的大幕在这个节骨眼上拉开。</p>
+<h3 id="32-强前置互验与阻止笛卡尔核爆"><a class="header" href="#32-强前置互验与阻止笛卡尔核爆">3.2 强前置互验与阻止“笛卡尔”核爆</a></h3>
+<p>退一万步讲，哪怕在这个逻辑运算链条上我们完全没有看到常委级别的常量出现，仅仅只是关联起了跨表的字段集合 <code>{T1.A, T2.B, T3.C}</code>。当优化器因为表的数据量选择率等等复杂原因估量，觉得有必要先将 <code>T1</code> 和 <code>T3</code> 来一场连接大作战执行 <code>T1 JOIN T3</code> 时（例如系统估算出即使盲连，两边返回的表行数也非常极小）。哪怕你回头审视那份极端的业务传入的原始 SQL 文本，压根根本找不到那俩表哪怕有丝毫一星半点的字段关联语句。</p>
+<p>但神圣而强大的 PostgreSQL EC 抽象集合模块仍会一视同仁。由于它坐拥此三子于一室，明知三方连通有着等同的强逻辑背书，系统便会极其从容地通过派发操作，生成出一条隐性联姻线缆：创造出 <code>T1.A = T3.C</code>，并将其强行施加这二者初次结合的连接判断标准（Join Qual）！</p>
+<p>这套机制几乎完美且不可破防地从代码根本设计上截断化解了一场原本必然演变为笛卡尔全铺积惨剧的糟糕连接爆炸隐患。当我们从这个宏大的视角去凝视晦涩生僻的等价类 (EC)，它存在的真正意义从不光是进行简单语法替换，<strong>它更是为了阻滞底层检索灾难、铺设规划指引路径和用以空间降维的最坚实的守护神与路标塔。</strong></p>
 <hr>
-<h2 id="4-与-pathkeys-的极度伴生依附羁绊"><a class="header" href="#4-与-pathkeys-的极度伴生依附羁绊">4. 与 PathKeys 的极度伴生依附羁绊</a></h2>
-<p>如果我们想要精通 PostgreSQL 核反应堆里最高深的代价机制（Cost 与 Sort 比拼），就必须弄懂最令人初级研究员烧脑反胃的死结：
-<strong>判断或指代某一条执行记录长河是否在局部已经满足排序规则，其终极判定信标（Beacon），从来不是系统死死挂着类似 <code>ORDER BY Table1.TName</code> 具体名字字母的烂铁片，而是将引信遥遥指引并锚定着一整个 <code>EquivalenceClass</code> 母盘内存地址针！！</strong></p>
-<p>这段孽缘将在下面专门用来剖析排序机制的《PathKeys》深度附录篇章中大规模延散，但在此我们只能浅尝揭开一角羁绊。</p>
-<p>为什么在物理抽象上，<code>PathKey</code> 里核心紧紧裹夹的非要是 EC 的指针，而不是直白的类似 <code>Var(A)</code> 的节点标识？
-假设现在系统在堆排处理的过程中得到了一个 EC，集合里密密麻麻打包好了 <code>{t1.A, t2.B}</code> 等变量族群。
-现在，底层引擎用执行器去老老实实地从磁盘扫过某一个建立在表 <code>t1</code> 表的某一列上的出色的 B 树索引（<code>IndexScan</code>）。由于它是走的左子树遍历扫出来，这串冒出来的流结果先天就是在自身 <code>t1.A</code> 列上严格物理递增排好了序的。此时代表该次执行结果产生的相关报告：其 <code>pathkeys</code> 的数据位标志出，“这份数据的流向已经契合并且臣服于这个涵盖着 <code>t1.A</code> 与 <code>t2.B</code> 等的专属巨大集合(EC)” 。</p>
-<p>执行层层上抛。突然，系统撞墙上了一块极高的拦路巨石：查询顶层需要处理一场非常浩大排面的重聚合或渲染限制，例如需要：<code>ORDER BY t2.B</code>。
-这时候，<code>ORDER BY</code> 引擎模块非常贪婪也极度渴望地去向主规划器打听：“目前流到我手里的全部执行底层数据流途径规划中，有没有哪个老好人、哪条线路是老早就按我想看的 <code>t2.B</code> 精准地分配排列过了呢？”</p>
-<p>工程代码层面的神迹在此呈现：这底层的优化器它不去刻板傻乎乎地核对是否含有 <code>t2.B</code> 这几个僵化的列名 ASCII 缩语匹配（字符串硬比对机制如果这么干肯定得出 “你底下是用 A 排序的，我不管它上面要用 B 排的，统统推翻作废进内存去强制重新洗牌”的惨烈错判结论）。它会拿出从下而上承接流转所指向来的“内存地址”，去和自身渴望目标去碰：比对起这个神圣统御者的 <code>EquivalenceClass</code> 引用指针！
-引擎一旦探知那底层带有的特征指向关联的 EC <strong>极其巧合与自己期望需要拥有的</strong>竟是截然相同的一块实体指针空间！
-这两者系统宛如闪电一拍即合大彻大悟：“因为早在 SQL 初筛阶段我就得知了 <code>t1.A = t2.B</code>，且我确认了此份源数据已经是绝对死死踩在 <code>t1.A</code> 顺序上了。那在广义物理真理学上讲，它在这一刻、它所承载的排列状态就绝对等同于天然的顺次完美的遵从了我所亟需渴望的 <code>t2.B</code> 的升序要求了！！！！”。</p>
-<p>这意味着，底层简简单单在小列 A 借道的一条便宜到极点的索引扫法，竟通过层层向上在更高维度的概念转嫁洗包，奇迹般地跨越表之鸿沟省掉了另一端为了展现大表顶层全表必须历经巨大内存空间的大排序算子的屠宰重压。这种神出鬼没般的维基换挡式空间优化对那些依赖所谓“傻瓜硬绑基于字符串对比映射表” 的常规玩具级别的 SQL 解析器来说，几乎不啻于降维空间核武打击；亦或者这就是人类设计 RDBMS 代码几十年来所结晶的算法巅峰——那些根本让试图通过几本快餐优化书藉浅尝辄止的用户，去望而生畏无法攀越的暗星孤峰罢了。</p>
+<h2 id="4-与序列流向-pathkeys-的极高依附羁绊"><a class="header" href="#4-与序列流向-pathkeys-的极高依附羁绊">4. 与序列流向 PathKeys 的极高依附羁绊</a></h2>
+<p>如果我们想要精通于理解 PostgreSQL 内核反应堆里最高深的代计算法则（Cost 和代价比拼），就必须得先理顺困扰着最多数新手研究员的那条最生硬的死结：
+<strong>判断或者指代某一条执行记录长河是否在这个阶段内部已经恰巧满足了你要求的排序规则配置时，它的终极判断信标（Beacon），永远不是去简单僵冷地对比诸如所谓的类似 <code>ORDER BY Table1.TName</code> 等几个简单的字符串名，它的底层引信是远远地锚定、并且绑定包裹着一整颗等价类！(指向 <code>EquivalenceClass</code> 的母体内存地址)。</strong></p>
+<p>这段千丝万缕的核心羁绊将在专门用来剖析排序内核的《PathKeys》深度核心篇章中大规模展开，但鉴于它们二者生死的关联性我们必须要在本节作一浅尝揭开。</p>
+<p>为什么在物理的数据结构设计抽象里头，<code>PathKey</code> 链表的这个核心必须紧紧夹杂挂钩 EC 的指针向标而不是直接对应上一个什么 <code>Var(A)</code> 的变量位呢？
+假设现在系统在堆排查探的过程构建了一个包含 <code>{t1.A, t2.B}</code> 的局部 EC 家族。
+目前，底层引擎派出了一个得力干将老老实实地从磁盘上沿着建立在 <code>t1</code> 的 B 树索引走了一轮查找（<code>IndexScan</code>）。由于检索特性沿着那棵树一直扫出来，这串喷涌而出的结果集先天在列 <code>t1.A</code> 上就是顺畅递增且有条理的了。这时刻这个路径会对外吐露它带有光环的一份证明报告册：它的 <code>pathkeys</code> 数据包说明了：“注意我手头这堆数据可是完美臣服并且符合那个极其著名的 <code>EquivalenceClass{t1.A, t2.B...}</code> 流向哦” 。</p>
+<p>执行计划层层往上汇报。然而在终点站查询的最外层顶端遇到了一个极高的过滤巨石：你的主逻辑命令强要求系统在这儿汇总做最终结算排序：<code>ORDER BY t2.B</code>。
+这会子，<code>ORDER BY</code> 这个引擎管控模组可是非常贪婪也极度渴望地去向查询主决策模块打听索要：“从下面那些底层兄弟一路干活抛给我的结果流里面，有没有哪一个特别机灵的小伙伴，它那条数据线的供货排向老早以前就按我想要求看的 <code>t2.B</code> 顺顺利利的整理分配过给大伙儿了？”</p>
+<p>工程代码在此展现出了神迹。底层规划器绝不会死板僵硬要求查核里面是否真就包含了 <code>t2.B</code> 这一串字母的完全一致打标（字符串硬比对在这个档口铁定会导致出现“我底下是用按照 A 来规整出来的，这上边死命令说要核实 B 的顺位，风牛流马不相及，统统当作废处理强行大乱再重新大把内存全部重排梳理一遍序列！”的惨烈悲剧和性能严重错判）。而是拿出从底下沿着流程传向自己的“这个状态集归档的内存地址引用指针”，去跟自己上游规划里的渴求期望目标硬顶比拼：比对上了那个同样身为这个族长神圣统御者也就是同等价阶位的 <code>EquivalenceClass</code> 实体指向指针！</p>
+<p>一旦引擎探知下面底层那些数据特征关联着的 EC，竟然 <strong>及其巧妙合拍地等同于自己所需要拥有的</strong>那个实体指针！这两套体系简直是宛如雷击瞬间拍板互相对上眼：“那是因为在早前一开始 SQL 过筛阶段我们全伙计就了解了 <code>t1.A = t2.B</code> 等式的永恒不变关系。我此刻验收到下方提交上的这份文件其实已经完美踩着贴着 <code>t1.A</code> 是顺位排列整理的结果了。如此一来从物理计算普遍真理的原则上来谈，在当下这一瞬间这流体、这份顺序态，早已就绝对并且纯天然地履行等同遵从了我亟需最迫切想要见到的 <code>t2.B</code> 排好顺序的大前提啦！”</p>
+<p>这就意味着，只要它在底下随手捡便宜借用了在一个小小列名 A 身上一条微不足道低消费的索引遍历跑法，竟然可以通过一路往上通过跨阶层的核心概念概念转移包裹魔法替换法，神乎其技的省跨越了大表和执行节点之间的巨大鸿沟。顺带来连在最尾端呈现全部表格输出的时候连那些最庞大要吃掉好几个 G 运存排序的超巨型的全排列重排内存杀手节点都能省得一去不回！这种在 RDBMS 执行领域宛如神出鬼没般的维度换挡置换的空间转移技巧。对现在那些随便做几个粗暴生硬匹配依赖玩具解析层去优化的粗制型引擎看来，近乎如同不可跨越、绝不明白的异星位面技术级打击。这代表着一代代 RDBMS 先驱设计大师几十年代码打磨结晶下来的算法思想极意巅峰——也是使得它这只大象至今立于不败之地无可替代的关键壁垒内核深渊所在。</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="路径序列与排序核心密码-pathkeys"><a class="header" href="#路径序列与排序核心密码-pathkeys">路径序列与排序核心密码 (PathKeys)</a></h1>
 <p>几乎所有关于数据库性能优化的面试题，最后都会绕回一个经典命题：“为什么加了索引，ORDER BY 或者 GROUP BY 变快了？”
