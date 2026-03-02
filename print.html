@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-d878a88c.js";
+            window.path_to_searchindex_js = "searchindex-e22076fb.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-55afa917.js"></script>
@@ -206,18 +206,9 @@
 <h2 id="核心调用流程"><a class="header" href="#核心调用流程">核心调用流程</a></h2>
 <p>PostgreSQL 优化器的入口函数位于 <code>src/backend/optimizer/plan/planner.c</code>。</p>
 <p>整个规划过程大致可以分为以下几个层级：</p>
-<pre class="mermaid">graph TD
-    A[planner] --&gt; B[standard_planner]
-    B --&gt; C[subquery_planner]
-    C --&gt; D[grouping_planner]
-    D --&gt; E[query_planner]
-    E --&gt; F[make_one_rel]
-    F --&gt; G[make_rel_from_joinlist]
-    D --&gt; H[create_plan]
-</pre>
-
+<p><img src="images/planner_core_flow.svg" alt="优化器核心流程"></p>
 <h3 id="1-planner"><a class="header" href="#1-planner">1. <code>planner()</code></a></h3>
-<p>这是优化器的全局入口点。它的主要职责非常简单：</p>
+<p>这是优化器的全局入口点。它的主要职责为：</p>
 <ul>
 <li>如果配置了钩子函数（<code>planner_hook</code>），则调用钩子。</li>
 <li>否则，调用默认的优化器实现 <code>standard_planner()</code>。</li>
@@ -225,53 +216,53 @@
 <h3 id="2-standard_planner"><a class="header" href="#2-standard_planner">2. <code>standard_planner()</code></a></h3>
 <p>这是标准的优化策略入口。它的工作包括：</p>
 <ul>
-<li><strong>配置设置</strong>：设置由于 <code>CURSOR</code> 或其他上下文导致的相关标志。</li>
+<li><strong>游标与参数设置</strong>：处理 <code>CURSOR</code> 或其他上下文导致的相关标志。</li>
 <li><strong>预处理</strong>：调用 <code>subquery_planner</code> 来处理顶层查询。</li>
-<li><strong>计划清理</strong>：生成的计划树可能包含一些不需要的节点，在这里进行最终清理。</li>
+<li><strong>计划清理</strong>：在生成的计划树中，去除不需要的冗余节点，进行最终清理。</li>
 </ul>
 <h3 id="3-subquery_planner"><a class="header" href="#3-subquery_planner">3. <code>subquery_planner()</code></a></h3>
-<p>这个函数负责处理一个特定的查询层级（Query Level）。对于包含子查询的 SQL，这个函数会被递归调用。</p>
+<p>该函数负责处理一个特定的查询层级（Query Level）。对于包含子查询的 SQL，这个函数会被递归调用。</p>
 <ul>
 <li><strong>重写与预处理</strong>：处理 <code>ANY/ALL</code> 子链接，提升子查询（Pull-up sublinks/subqueries）。</li>
-<li><strong>调用下层</strong>：一旦查询树被扁平化或重写，它会调用 <code>grouping_planner</code> 来进行实际的规划。</li>
+<li><strong>调用下层规划</strong>：当查询树被扁平化或重写后，调用 <code>grouping_planner</code> 来进行实际的规划。</li>
 </ul>
 <h3 id="4-grouping_planner"><a class="header" href="#4-grouping_planner">4. <code>grouping_planner()</code></a></h3>
-<p>这个函数是“全能选手”，负责处理：</p>
+<p>该函数负责处理查询的各个组成部分，包括：</p>
 <ul>
-<li><strong>非 Join 部分</strong>：处理 <code>GROUP BY</code>、<code>HAVING</code>、<code>WINDOW</code> functions、<code>DISTINCT</code> 和 <code>ORDER BY</code>。</li>
-<li>它首先调用 <code>query_planner</code> 来计算最基本的“扫描/连接”（Scan/Join）路径。</li>
-<li>然后，它在 <code>query_planner</code> 返回的路径基础上，添加聚合（Aggregation）、排序（Sorting）和分组节点。</li>
+<li>处理 <code>GROUP BY</code>、<code>HAVING</code>、<code>WINDOW</code> functions、<code>DISTINCT</code> 和 <code>ORDER BY</code> 等非 Join 操作。</li>
+<li>首先调用 <code>query_planner</code> 来计算基础的“扫描/连接”（Scan/Join）路径。</li>
+<li>在 <code>query_planner</code> 返回的路径基础上，添加聚合（Aggregation）、排序（Sorting）和分组等上层节点。</li>
 </ul>
 <h3 id="5-query_planner"><a class="header" href="#5-query_planner">5. <code>query_planner()</code></a></h3>
-<p>这是核心中的核心，专注于 <strong>Scan/Join</strong> 优化。</p>
+<p>这是优化器的核心函数，专注于 Scan/Join 阶段的优化。</p>
 <ul>
-<li><strong>基本关系处理</strong>：为查询中的每个表（Base Relation）生成扫描路径（Seq Scan, Index Scan 等）。</li>
-<li><strong>连接搜索</strong>：调用 <code>make_one_rel()</code> 来搜索最优的连接顺序。它使用动态规划（Dynamic Programming）或遗传算法（GEQO）来组合这些表，直到所有表都被连接成一个最终的关系。</li>
+<li><strong>基础关系处理</strong>：为查询中的每个基表（Base Relation）生成扫描路径（如 Seq Scan, Index Scan 等）。</li>
+<li><strong>连接搜索</strong>：调用 <code>make_one_rel()</code> 来搜索最优的表连接顺序。系统会使用动态规划（Dynamic Programming）或遗传算法（GEQO）来组合基础表，直到所有表组成一个最终的关系。</li>
 </ul>
 <h2 id="主要阶段总结"><a class="header" href="#主要阶段总结">主要阶段总结</a></h2>
-<p>根据 <code>standard_planner</code> 的执行逻辑，我们可以将优化过程概括为以下步骤：</p>
+<p>根据 <code>standard_planner</code> 的执行逻辑，优化过程可以概括为以下三个步骤：</p>
 <ol>
 <li>
 <p><strong>预处理 (Preprocessing)</strong>:</p>
 <ul>
-<li>重写子查询，简化表达式（<code>eval_const_expressions</code>）。</li>
-<li>消除冗余的外连接（Outer Join Elimination）。</li>
-<li>分发约束条件（Qualifiers）。</li>
+<li>重写子查询，调用 <code>eval_const_expressions</code> 化简常量表达式。</li>
+<li>消除无用的外连接（Outer Join Elimination）。</li>
+<li>分发和处理约束条件（Qualifiers）。</li>
 </ul>
 </li>
 <li>
 <p><strong>扫描/连接规划 (Scan/Join Planning)</strong>:</p>
 <ul>
 <li>为基表生成访问路径。</li>
-<li>计算两表连接、三表连接…直到生成包含所有表的连接路径。</li>
+<li>计算两表连接、三表连接等，直到生成包含所有表的连接路径。</li>
 <li>这部分主要由 <code>query_planner</code> 和 <code>make_one_rel</code> 完成。</li>
 </ul>
 </li>
 <li>
 <p><strong>后置处理 (Post-processing)</strong>:</p>
 <ul>
-<li>在连接结果之上，添加 Grouping、Aggregation、Windowing 和 Sorting 节点。</li>
-<li>将最优的 <code>Path</code> 树转换为最终的 <code>Plan</code> 树（<code>create_plan</code>）。</li>
+<li>在连接结果之上，添加 Grouping、Aggregation、Windowing 和 Sorting 等节点。</li>
+<li>将包含最优代价的 <code>Path</code> 树转换为最终的 <code>Plan</code> 树（<code>create_plan</code> 阶段）。</li>
 </ul>
 </li>
 </ol>
@@ -283,469 +274,458 @@
 <li><strong>计划节点生成</strong>: <code>src/backend/optimizer/plan/createplan.c</code></li>
 </ul>
 <div style="break-before: page; page-break-before: always;"></div>
-<h1 id="查询树的预处理"><a class="header" href="#查询树的预处理">查询树的预处理</a></h1>
-<p>在 PostgreSQL 优化器（Planner）接收到解析和重写后的查询树（Query Tree）以后，第一步并非直接开始路径搜索，而是通过 <code>subquery_planner()</code> 函数进行一系列复杂的预处理。预处理的核心目标是消除查询中的冗余结构、展开嵌套，并对表达式进行规范化和简化，从而为后续的 <code>grouping_planner()</code> 和 <code>query_planner()</code> 减轻负担，提供尽可能扁平化和易于优化的结构。</p>
-<p>以下内容基于 PostgreSQL 18.1 源码（<code>src/backend/optimizer/plan/planner.c</code> 中的 <code>subquery_planner</code>）详细解析查询树预处理的各个核心阶段。</p>
-<h2 id="1-cte-与底层结构展开"><a class="header" href="#1-cte-与底层结构展开">1. CTE 与底层结构展开</a></h2>
-<p>在真正进入表达式级别的预处理之前，优化器必须先把从属的查询块或语法结构给“铺平”。</p>
+<h1 id="查询树的预处理-query-tree-preprocessing"><a class="header" href="#查询树的预处理-query-tree-preprocessing">查询树的预处理 (Query Tree Preprocessing)</a></h1>
+<p>当 PostgreSQL 优化器接收到解析和重写完毕的查询树（Query Tree）后，首先会通过 <code>subquery_planner()</code> 函数进行预处理。
+预处理的主要目的是简化查询树，消除冗余结构并尽可能展平嵌套。系统会将复杂的表达式简化并规范化，从而为后续负责处理连接逻辑的 <code>grouping_planner()</code> 与 <code>query_planner()</code> 提供更清晰、扁平的基础结构。</p>
+<p>以下内容结合 PostgreSQL 18.1 源码（核心逻辑位于 <code>src/backend/optimizer/plan/planner.c</code> 中的 <code>subquery_planner</code>），介绍查询树预处理的几个核心步骤。</p>
+<hr>
+<h2 id="1-cte-与子查询的处理"><a class="header" href="#1-cte-与子查询的处理">1. CTE 与子查询的处理</a></h2>
+<p>在处理具体表达式之前，优化器需要先将查询块和子句展开。</p>
 <ul>
-<li><strong>处理 WITH 语句 (CTE)</strong>: 调用 <code>SS_process_ctes</code>。如果 CTE 可以被内联（Inline），则将其展开为 <code>RTE_SUBQUERY</code>；否则构建出 InitPlan 级别的 SubPlan，以便在主查询执行前计算完毕。</li>
-<li><strong>补全空 FROM 子句</strong>: 通过 <code>replace_empty_jointree</code>。如果查询没有 <code>FROM</code>（如 <code>SELECT 1</code>），优化器会人为挂载一个 Dummy 的 <code>RTE_RESULT</code> 节点，统一后续的 JoinTree 处理逻辑。</li>
-<li><strong>SubLink 的显式提升 (ANY/EXISTS)</strong>: 调用 <code>pull_up_sublinks</code>。将 <code>WHERE</code> 或者 <code>JOIN/ON</code> 里面涉及 <code>ANY</code> / <code>EXISTS</code> 的相关子查询（SubLinks）尽早转化为半连接（Semi-Join）或反连接（Anti-Join）。</li>
-<li><strong>子查询扁平化 (Subquery Pull-up)</strong>: 调用 <code>pull_up_subqueries</code>。如果 <code>FROM</code> 子句中直接写了普通的简单子查询，系统会尝试将其合并到当前查询层级，消除不必要的嵌套。</li>
-<li><strong>UNION ALL 的扁平化</strong>: 遇到简单的 <code>UNION ALL</code>，调用 <code>flatten_simple_union_all</code> 将其重写为并列的追加关系 <code>appendrel</code>，避免复杂的集合操作开销。</li>
+<li><strong>处理 WITH 语句 (CTE)</strong>: 系统首先调用 <code>SS_process_ctes</code>。如果 CTE 满足内联（Inline）条件，优化器会将其展开并转化为普通的 <code>RTE_SUBQUERY</code>；如果不满足内联条件，则会为其单独生成 InitPlan 级别的 SubPlan，确保它在主查询执行前计算完毕。</li>
+<li><strong>补全 FROM 子句</strong>: 通过 <code>replace_empty_jointree</code> 函数处理没有 <code>FROM</code> 子句的查询（例如 <code>SELECT 1</code>）。优化器会为其挂载一个基础的 <code>RTE_RESULT</code> 节点，以便后续统一使用标准的连表 (JoinTree) 算法。</li>
+<li><strong>SubLink (子引用) 提升 (ANY/EXISTS)</strong>: 调用 <code>pull_up_sublinks</code>，将位于 <code>WHERE</code> 或 <code>JOIN/ON</code> 条件中的 <code>ANY</code> / <code>EXISTS</code> 等子查询提取出来，并尝试转化为半连接（Semi-Join）或反连接（Anti-Join）。</li>
+<li><strong>子查询扁平化 (Subquery Pull-up)</strong>: 调用 <code>pull_up_subqueries</code>，尝试将 <code>FROM</code> 子句中基础的子查询与当前查询层级融合，减少查询嵌套层级。</li>
+<li><strong>UNION ALL 展开</strong>: 遇到简单的 <code>UNION ALL</code> 时，优化器调用 <code>flatten_simple_union_all</code> 将其解构为平铺的追加关系（<code>appendrel</code>），从而避免复杂的集合操作开销。</li>
 </ul>
-<h2 id="2-rte-rangetableentry-预处理"><a class="header" href="#2-rte-rangetableentry-预处理">2. RTE (RangeTableEntry) 预处理</a></h2>
-<p>RangeTable 维护了查询涉及的所有表、视图、函数。</p>
+<hr>
+<h2 id="2-关系表范围-rte-处理"><a class="header" href="#2-关系表范围-rte-处理">2. 关系表范围 (RTE) 处理</a></h2>
+<p>RangeTable 记录了查询涉及的所有表、视图及函数。</p>
 <ul>
-<li><strong>函数 RTE 内联与常量化</strong>: <code>preprocess_function_rtes</code> 针对 <code>FROM</code> 子句中的函数进行计算。如果是简单的常数化函数，直接得出结果；如果有机会，则像展开视图一样将函数展开（Inline）。</li>
-<li><strong>虚拟生成列展开</strong>: <code>expand_virtual_generated_columns</code> 会扫描所有的表，将查询内涉及到 Generated Columns 的 <code>Var</code> 引用直接替换为其背后的计算表达式，方便一并在后续步骤被折叠。</li>
+<li><strong>函数 RTE 内联与常量化</strong>: <code>preprocess_function_rtes</code> 负责处理 <code>FROM</code> 子句中的函数。如果函数不包含变量且为常量计算，系统会直接计算其结果；如果符合内联展开条件，则将其函数体展开并并入主查询。</li>
+<li><strong>虚拟生成列的展开</strong>: <code>expand_virtual_generated_columns</code> 会对表进行排查。当发现查询中引用了生成列（Generated Columns 的 <code>Var</code> 引用）时，优化器会用其背后的计算表达式进行替换，以方便后续的表达式化简。</li>
 </ul>
-<h2 id="3-表达式预处理阶段-preprocess_expression"><a class="header" href="#3-表达式预处理阶段-preprocess_expression">3. 表达式预处理阶段 (preprocess_expression)</a></h2>
-<p>这是预处理代码块中占篇幅最大、也最为细腻的一环。系统不仅要处理 <code>WHERE</code> 里的条件，还要将 <code>TargetList</code>、<code>HAVING</code>、<code>LIMIT</code> 及 <code>ON CONFLICT</code> 等各处的表达式利用 <code>preprocess_expression()</code> 统统洗一遍。核心动作包括：</p>
-<h3 id="31-连接别名展开-join-alias-variables-flattening"><a class="header" href="#31-连接别名展开-join-alias-variables-flattening">3.1 连接别名展开 (Join Alias Variables Flattening)</a></h3>
-<p>通过 <code>flatten_join_alias_vars</code>，优化器将由于 <code>JOIN ... USING</code> 或自然连接引发的连接别名变量，替换为来自底层基表的原始列（<code>Var</code> 引用）。这确保后续的优化只需要面对最底层的真实列名。</p>
+<hr>
+<h2 id="3-表达式预处理-preprocess_expression"><a class="header" href="#3-表达式预处理-preprocess_expression">3. 表达式预处理 (preprocess_expression)</a></h2>
+<p>预处理阶段的核心步骤之一，是对 <code>TargetList</code>、<code>WHERE</code>、<code>HAVING</code>、<code>LIMIT</code> 和 <code>ON CONFLICT</code> 等各个部分的表达式调用 <code>preprocess_expression()</code> 进行规范化处理。其核心操作包括：</p>
+<h3 id="31-连接别名还原-join-alias-variables-flattening"><a class="header" href="#31-连接别名还原-join-alias-variables-flattening">3.1 连接别名还原 (Join Alias Variables Flattening)</a></h3>
+<p>通过 <code>flatten_join_alias_vars</code>，优化器会将因为使用了 <code>JOIN ... USING</code> 或自然连接所产生的连接别名变量，替换回它们在底层基础表中的原始列名引用（底层的 <code>Var</code> 引用）。这保证了后续的优化逻辑只需处理物理表字段。</p>
 <h3 id="32-常量折叠-constant-folding"><a class="header" href="#32-常量折叠-constant-folding">3.2 常量折叠 (Constant Folding)</a></h3>
-<p>调用核心函数 <code>eval_const_expressions</code>。
-不仅会将 <code>1 + 1</code> 化简为 <code>2</code>，还能对各种内部函数的常量输入进行预计算（前提是函数为 Immutable）。重要的是，它会压平嵌套的 <code>AND/OR</code>（将 <code>AND (A, AND(B, C))</code> 变成 <code>AND(A, B, C)</code>）以保持逻辑树平坦。</p>
-<h3 id="33-条件标准化-canonicalize-qual"><a class="header" href="#33-条件标准化-canonicalize-qual">3.3 条件标准化 (Canonicalize Qual)</a></h3>
-<p>利用 <code>canonicalize_qual</code> 函数，如果表达式是一个布尔条件（如 <code>WHERE</code> 里的项），它会尝试做一定的范式转化（比如尽力将其拉平或者排查明显的互斥矛盾）。</p>
-<h3 id="34-剩余-sublink-转换与外层变量绑定"><a class="header" href="#34-剩余-sublink-转换与外层变量绑定">3.4 剩余 SubLink 转换与外层变量绑定</a></h3>
+<p>调用核心化简函数 <code>eval_const_expressions</code>。
+该函数除了计算简单的常量算术外，还会对内置稳定函数（Immutable Function）的常量输入进行提早计算。此外，它能将深层嵌套的条件进行扁平化处理，如将 <code>AND (A, AND(B, C))</code> 展平为 <code>AND(A, B, C)</code>。</p>
+<h3 id="33-条件范式化-canonicalize-qual"><a class="header" href="#33-条件范式化-canonicalize-qual">3.3 条件范式化 (Canonicalize Qual)</a></h3>
+<p>经由 <code>canonicalize_qual</code> 函数，系统会对布尔条件（例如 <code>WHERE</code> 限定项）进行逻辑层面的范式转换，展平表达式并排查其中可能存在的互斥或冗余条件。</p>
+<h3 id="34-杂项-sublink-转换与变量绑定"><a class="header" href="#34-杂项-sublink-转换与变量绑定">3.4 杂项 SubLink 转换与变量绑定</a></h3>
 <ul>
-<li>经过 <code>pull_up_sublinks</code> 还没解决的杂项子链接（如出现在 <code>SELECT</code> 目标列里的标量子查询），在此被包装成 <code>SubPlan</code>。</li>
-<li><code>SS_replace_correlation_vars</code> 会找出对上层查询列的引用，并使用 <code>Param</code>（参数）进行绑定，使得父子查询产生实质的数据关联参数。</li>
-<li>最后对于 <code>WHERE</code> / <code>HAVING</code> 的顶层条件，调用 <code>make_ands_implicit</code> 退化为 Implicit-AND 的 <code>List</code> 结构存放，不再采用显式的 <code>BoolExpr</code>。</li>
+<li>针对之前 <code>pull_up_sublinks</code> 阶段未能处理的子查询（例如出现在 <code>SELECT</code> 目标列集合中的标量子查询），会在此处转换为 <code>SubPlan</code> 操作符。</li>
+<li><code>SS_replace_correlation_vars</code> 会查找子查询中对上层父查询变量的引用，并使用 <code>Param</code>（参数）将其绑定，建立父子查询之间的数据依赖关系。</li>
+<li>最终，对于 <code>WHERE</code> 和 <code>HAVING</code> 顶层的条件判断，系统会调用 <code>make_ands_implicit</code> 剥除显式的 <code>BoolExpr</code> 包装，将其转换为隐式的 <code>Implicit-AND</code> 链表结构。</li>
 </ul>
+<hr>
 <h2 id="4-后期合并与结构修正"><a class="header" href="#4-后期合并与结构修正">4. 后期合并与结构修正</a></h2>
-<p>经过表达式洗刷后，<code>subquery_planner</code> 在交付给 <code>grouping_planner</code> 之前会做最后的清理。</p>
+<p>在表达式处理完毕后，<code>subquery_planner</code> 还会进行一些清理操作，然后再将查询树交给 <code>grouping_planner</code>。</p>
 <ul>
-<li><strong>HAVING 下推为 WHERE</strong>: 这是经典的优化手段。系统会扫描 <code>HAVING</code> 子句，寻找那些不包含聚合函数、不包含易变函数（Volatile Function）并且不需要等到空分组集产生结果的过滤条件（例如 <code>HAVING col = 1</code>）。这些被认为是退化的聚合后过滤，系统会将其克隆或移动到 <code>WHERE</code> 列表中，从而在进入 <code>Aggregate</code> 算子之前尽早淘汰无关数据。</li>
-<li><strong>外连接消除 (Outer Join Elimination)</strong>: 调用 <code>reduce_outer_joins</code>。因为上一步各种 <code>WHERE</code> 表达式已经被处理，这一步系统会检查如果存在 <code>WHERE</code> 强约束要求某空侧列非空（比如 <code>LEFT JOIN B ON ... WHERE B.id &gt; 10</code>），此时原本的 <code>LEFT JOIN</code> 已经失去保留 null 侧的意义，该外连接会被安全地降级成 <code>INNER JOIN</code>。</li>
-<li><strong>剔除无用的 Result RTE</strong>: 调用 <code>remove_useless_result_rtes</code>。前面补充的或中间产生的不再起实质作用的 Dummy 关联在此被扫地出门。</li>
+<li><strong>HAVING 转化为 WHERE</strong>: 系统会检查 <code>HAVING</code> 子句中的条件。如果发现其中不包含聚合函数，也不含易失函数（Volatile Function），系统会将其移动或复制到 <code>WHERE</code> 子句中去（例如单纯的 <code>HAVING col = 1</code>）。这样可以在进入代价较高的 <code>Aggregate</code> 分组算子之前提早过滤数据。</li>
+<li><strong>外连接消除 (Outer Join Elimination)</strong>: 通过调用 <code>reduce_outer_joins</code>。由于之前的步骤化简了 <code>WHERE</code> 表达式，系统会检查是否有 <code>WHERE</code> 条件要求由于 LEFT/RIGHT JOIN 产生的 NULL 值为非空（例如 <code>LEFT JOIN B ON ... WHERE B.id &gt; 10</code>）。如果存在这样的严格限制条件，这个外连接就可以被安全降级为执行效率更高的 <code>INNER JOIN</code>。</li>
+<li><strong>移除无用 Result RTE</strong>: 最后调用 <code>remove_useless_result_rtes</code>，清理前面步骤中产生的，但目前已经失去作用的冗余 <code>RTE_RESULT</code> 节点。</li>
 </ul>
-<p>至此，一个极其干净、扁平化且逻辑清晰的等价 Query Tree，才会正式交给 <code>grouping_planner</code>。</p>
-<h2 id="源码入口"><a class="header" href="#源码入口">源码入口</a></h2>
+<p>经过预处理阶段的优化后，查询树被转换为更扁平、逻辑结构更清晰的形式，随后传递给 <code>grouping_planner</code> 继续后续优化。</p>
+<hr>
+<h2 id="源码参考"><a class="header" href="#源码参考">源码参考</a></h2>
 <ul>
-<li><code>src/backend/optimizer/plan/planner.c</code>: <code>standard_planner</code> -&gt; <code>subquery_planner</code></li>
-<li>该逻辑作为第一阶段的总览，其余各子项优化详情，请查看侧边栏对应小节。</li>
+<li><strong>核心逻辑位置</strong>：<code>src/backend/optimizer/plan/planner.c</code> 中的 <code>standard_planner</code> -&gt; <code>subquery_planner</code>。</li>
 </ul>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="子查询提升-subquery-pull-up"><a class="header" href="#子查询提升-subquery-pull-up">子查询提升 (Subquery Pull-up)</a></h1>
-<p>子查询提升（Subquery Pull-up）是 PostgreSQL 优化器中最为核心的逻辑重写优化机制之一。它发生在规划器的预处理早期阶段。其根本目标是**“打破查询边界，扁平化查询树”**，使得父子查询能够融合在一起，从而大幅度扩展 Join Order（连接顺序）的搜索空间，并且减少执行层的嵌套开销。</p>
-<h2 id="1-背景与目标为何要提升"><a class="header" href="#1-背景与目标为何要提升">1. 背景与目标：为何要提升？</a></h2>
-<p>如果不进行提升，嵌套在 <code>FROM</code> 或者是 <code>WHERE</code> 子句中的子查询，在执行树上就会变成单独的 <code>SubqueryScan</code> 节点或是 <code>SubPlan</code> 操作（InitPlan/SubPlan）。
-这限制了优化器的能力：</p>
+<p>子查询提升（Subquery Pull-up）是 PostgreSQL 优化器在预处理早期阶段的重要逻辑重写机制。其主要目的是<strong>消除不必要的查询嵌套层级，将查询树尽可能的“拍平”</strong>。一旦子查询和主查询成功合并，优化器在排列多表连接顺序 (Join Order) 时就能拥有更大的搜索空间，同时也能减少执行器在运行时的执行层级和开销。</p>
+<hr>
+<h2 id="1-为什么需要子查询提升"><a class="header" href="#1-为什么需要子查询提升">1. 为什么需要子查询提升？</a></h2>
+<p>如果不进行子查询提升，位于 <code>FROM</code> 或 <code>WHERE</code> 子句中的嵌套子查询在最终生成的执行树中会保留为独立的查询节点（如 <code>SubqueryScan</code> 节点或 <code>InitPlan/SubPlan</code> 组件）。</p>
+<p>这种隔离会带来以下两个问题：</p>
 <ul>
-<li><strong>黑盒隔离</strong>：父查询的表无法与子查询内部的表混合进行 Join Order 规划。</li>
-<li><strong>运行时开销</strong>：执行引擎在运算时需要频繁穿越执行计划的不同层级进行上下文切换或独立求解。</li>
+<li><strong>连接重排受限</strong>：优化器无法将主查询中的表与子查询内部的表混合在一起进行 Join Order 优化，从而限制了寻找更优连接顺序的可能性。</li>
+<li><strong>运行时开销增加</strong>：在实际执行时，执行引擎可能会在不同层级上下文中进行多次调用，或者只能将子查询作为一个黑盒独立执行。</li>
 </ul>
-<p>因此，PostgreSQL 规划器在 <code>src/backend/optimizer/prep/prepjointree.c</code> 中，专门设计了两大核心路径来拆解各类“提升”。</p>
-<h2 id="2-sublink-提升pull_up_sublinks"><a class="header" href="#2-sublink-提升pull_up_sublinks">2. SubLink 提升：<code>pull_up_sublinks</code></a></h2>
-<p><code>SubLink</code> 通常指的是出现在 <code>WHERE</code> 或者 <code>JOIN/ON</code> 过滤条件中的子查询结构。
-优化器在 <code>subquery_planner</code> 一开始就会调用 <code>pull_up_sublinks()</code>。</p>
-<p>其核心递归函数 <code>pull_up_sublinks_qual_recurse</code> 会遍历条件，并根据 <code>SubLink</code> 的类型采取不同的提升策略。这依赖于几个关键转换函数：</p>
-<h3 id="21-any-sublink-convert_any_sublink_to_join"><a class="header" href="#21-any-sublink-convert_any_sublink_to_join">2.1 <code>ANY</code> SubLink (<code>convert_ANY_sublink_to_join</code>)</a></h3>
-<p>当遇到类似 <code>WHERE x.id = ANY (SELECT id FROM y)</code>（即 <code>IN (subquery)</code>）时：</p>
+<p>为了解决这个问题，PostgreSQL 的规划器在其 <code>src/backend/optimizer/prep/prepjointree.c</code> 中，主要通过两套机制来处理和提升子查询。</p>
+<hr>
+<h2 id="2-处理-sublinkpull_up_sublinks"><a class="header" href="#2-处理-sublinkpull_up_sublinks">2. 处理 SubLink：<code>pull_up_sublinks</code></a></h2>
+<p>在 PostgreSQL 的内部实现中，<code>SubLink</code> 通常指的是位于 <code>WHERE</code> 或是 <code>JOIN/ON</code> 过滤条件中的子查询。在 <code>subquery_planner</code> 启动时，优化器首先会调用 <code>pull_up_sublinks()</code> 来处理这些结构。</p>
+<p>该逻辑依赖于递归函数 <code>pull_up_sublinks_qual_recurse</code>，它会遍历条件表达式树，针对不同类型的 <code>SubLink</code> 进行转化：</p>
+<h3 id="21-转化-any-子链接-convert_any_sublink_to_join"><a class="header" href="#21-转化-any-子链接-convert_any_sublink_to_join">2.1 转化 <code>ANY</code> 子链接 (<code>convert_ANY_sublink_to_join</code>)</a></h3>
+<p>遇到类似 <code>WHERE x.id = ANY (SELECT id FROM y)</code>（常用的 <code>IN (子查询)</code>结构）时：</p>
 <ul>
-<li>优化器会将其从 <code>WHERE</code> 条件中剥离出来，转化成与父查询的一张表的 <strong><code>JOIN_SEMI</code> (半连接)</strong>。</li>
-<li>对于常数数组 <code>IN (1, 2, 3)</code>，也会在此阶段通过 <code>convert_VALUES_to_ANY</code> 做尝试折叠化简。</li>
+<li>优化器会将其从 <code>WHERE</code> 条件中提取出来，并转化为能够与上层父查询合并的 <strong><code>JOIN_SEMI</code> (半连接)</strong>。</li>
+<li>如果其内部是一个包含常数的列表，例如 <code>IN (1, 2, 3)</code>，系统也会在这个阶段调用 <code>convert_VALUES_to_ANY</code> 尝试进行就地化简。</li>
 </ul>
-<h3 id="22-exists-sublink-convert_exists_sublink_to_join"><a class="header" href="#22-exists-sublink-convert_exists_sublink_to_join">2.2 <code>EXISTS</code> SubLink (<code>convert_EXISTS_sublink_to_join</code>)</a></h3>
-<p>当遇到 <code>WHERE EXISTS (SELECT 1 FROM y WHERE x.id = y.id)</code> 时：</p>
+<h3 id="22-转化-exists-子链接-convert_exists_sublink_to_join"><a class="header" href="#22-转化-exists-子链接-convert_exists_sublink_to_join">2.2 转化 <code>EXISTS</code> 子链接 (<code>convert_EXISTS_sublink_to_join</code>)</a></h3>
+<p>遇到 <code>WHERE EXISTS (SELECT 1 FROM y WHERE x.id = y.id)</code> 的结构时：</p>
 <ul>
-<li>本质与 <code>ANY</code> 类似，这会被转化为一个 <strong><code>JOIN_SEMI</code> (半连接)</strong>。</li>
-<li>但是它进一步处理了带有 <code>NOT</code> 修饰的情况：如果是 <code>WHERE NOT EXISTS ( ... )</code>，在 PG 中会被直接转化为 <strong><code>JOIN_ANTI</code> (反连接)</strong>。这就允许优化器使用 Hash Anti-Join 等高效物理算子直接过滤数据。</li>
+<li>处理逻辑与 <code>ANY</code> 类似，将其转化为 <strong><code>JOIN_SEMI</code> (半连接)</strong>。</li>
+<li>如果原始条件包含 <code>NOT</code> 否定修饰（如 <code>WHERE NOT EXISTS ( ... )</code>），优化器将其转化为 <strong><code>JOIN_ANTI</code> (反连接)</strong>。这使得优化器在后续的物理计划评估中，能够选择如 Hash Anti-Join 等高效的算子来进行排他性过滤。</li>
 </ul>
-<h2 id="3-subquery-提升pull_up_subqueries"><a class="header" href="#3-subquery-提升pull_up_subqueries">3. Subquery 提升：<code>pull_up_subqueries</code></a></h2>
-<p>区别于 <code>SubLink</code>，一般的 <code>Subquery</code> 主要指代的是出现在 <code>FROM</code> 子句里面的表源定义（如 <code>SELECT * FROM a JOIN (SELECT * FROM b) c ON ...</code>）。
-当处理完 <code>SubLink</code> 之后，<code>planner</code> 接着调用 <code>pull_up_subqueries()</code>，尝试将 FROM 下拉取出来的子查询给融会贯通。</p>
+<hr>
+<h2 id="3-合并-subquerypull_up_subqueries"><a class="header" href="#3-合并-subquerypull_up_subqueries">3. 合并 Subquery：<code>pull_up_subqueries</code></a></h2>
+<p>有别于作为条件表达式存在的 <code>SubLink</code>，正规的 <code>Subquery</code> 通常指的是位于 <code>FROM</code> 子句中、作为数据源使用的子查询（例如 <code>SELECT * FROM a JOIN (SELECT * FROM b) c ON ...</code>）。
+当处理完 <code>SubLink</code> 后，规划器会调用 <code>pull_up_subqueries()</code>，尝试将 <code>FROM</code> 列表中的子查询结构展开并融进主查询。</p>
 <h3 id="31-简单子查询-is_simple_subquery--pull_up_simple_subquery"><a class="header" href="#31-简单子查询-is_simple_subquery--pull_up_simple_subquery">3.1 简单子查询 (<code>is_simple_subquery</code> / <code>pull_up_simple_subquery</code>)</a></h3>
-<p>怎样才叫一个“简单（Simple）”的子查询？</p>
+<p>满足以下条件的会被判定为可以提升的“简单（Simple）”子查询：</p>
 <ul>
-<li>它不能包含 <code>GROUP BY</code>、<code>HAVING</code>。</li>
-<li>不能包含 <code>LIMIT</code> / <code>OFFSET</code>。</li>
-<li>不能包含集合操作（<code>UNION</code>、<code>INTERSECT</code>、<code>EXCEPT</code>）。</li>
-<li>不能包含顶层聚合函数或是窗口函数。</li>
+<li>不包含 <code>GROUP BY</code> 和 <code>HAVING</code> 子句。</li>
+<li>不带有 <code>LIMIT</code> 和 <code>OFFSET</code>。</li>
+<li>没有使用 <code>UNION</code>、<code>INTERSECT</code>、<code>EXCEPT</code> 等集合运算。</li>
+<li>选择列表中不包含聚合函数或窗口函数。</li>
 </ul>
-<p>如果是简单子查询，<code>pull_up_simple_subquery()</code> 将大显身手：</p>
+<p>在确认是简单子查询后，<code>pull_up_simple_subquery()</code> 会执行以下操作：</p>
 <ol>
-<li>它将子查询的 <code>FromExpr</code> 的儿子全部并入到当前层级的 <code>FromExpr</code> 树里。</li>
-<li>剥除该子查询外层包装。</li>
-<li>利用 <code>pullup_replace_vars</code> 构建或替换那些需要保持上下文独立性的变量引用（如果在 Grouping Set 里，有时还要为其包装一层 <code>PlaceHolderVar</code>）。</li>
+<li>将该子查询中的 <code>FromExpr</code> 节点包含的对象，合并到主查询所在层级的 <code>FromExpr</code> 树中。</li>
+<li>剥除该子查询外层的包装节点。</li>
+<li>调用 <code>pullup_replace_vars</code> 函数，处理和替换关联的变量（如果涉及到 Grouping Set，还需要将其装入 <code>PlaceHolderVar</code> 来维持语义）。</li>
 </ol>
-<h3 id="32-简单-union-all-的扁平化-pull_up_simple_union_all"><a class="header" href="#32-简单-union-all-的扁平化-pull_up_simple_union_all">3.2 简单 UNION ALL 的扁平化 (<code>pull_up_simple_union_all</code>)</a></h3>
-<p>对于 <code>FROM (SELECT x FROM a UNION ALL SELECT x FROM b)</code> 这样的集合操作：
-如果没有任何排序 <code>ORDER BY</code>、没有 <code>LIMIT</code>，并且是 <code>UNION ALL</code> （不用去重），优化器会调用 <code>is_simple_union_all</code>。
-它会把这颗 <code>UNION ALL</code> 子树彻底压平，转化为一系列的追加关系 (<code>AppendRelInfo</code>)。这就将集合操作融化成底层扫描层级的简单 <code>Append</code>，而不用执行繁重的 Subquery 拼接。</p>
-<h3 id="33-lateral-子查询的修补"><a class="header" href="#33-lateral-子查询的修补">3.3 LATERAL 子查询的修补</a></h3>
-<p>在 PostgreSQL 支持了 <code>LATERAL</code> 之后，提取时还涉及 <code>LATERAL</code> 跨层依赖参数。
-如果发生 <code>pull_up_subquery</code> 且原本有 <code>LATERAL</code> 引用，代码会通过 <code>IncrementVarSublevelsUp</code> 等复杂的方法调整 Vars 的层级深度（Sublevel），并借由 <code>CombineRangeTables</code> 重组合并底层的 RangeTable 中记录被依赖的状态。这一机制对关联子查询能够被最终压平至关重要。</p>
+<h3 id="32-提升简单的-union-all-pull_up_simple_union_all"><a class="header" href="#32-提升简单的-union-all-pull_up_simple_union_all">3.2 提升简单的 UNION ALL (<code>pull_up_simple_union_all</code>)</a></h3>
+<p>对于类似 <code>FROM (SELECT x FROM a UNION ALL SELECT x FROM b)</code> 的结构：
+只要确认它不带有 <code>ORDER BY</code>，没有 <code>LIMIT</code>，并且是单纯的 <code>UNION ALL</code>（不需要去重），优化器就会调用 <code>is_simple_union_all</code>。
+它会将这个 <code>UNION ALL</code> 树转换为平铺的追加关系列表 (<code>AppendRelInfo</code>)。这样就可以将集合操作展平为底层的 <code>Append</code> 节点，避免不必要的子查询资源开销。</p>
+<h3 id="33-处理-lateral-引用"><a class="header" href="#33-处理-lateral-引用">3.3 处理 LATERAL 引用</a></h3>
+<p>在引入了 <code>LATERAL</code> 关键字后，提升逻辑变得更加复杂，因为它涉及对外层查询的变量引用。
+如果在 <code>pull_up_subquery</code> 的过程中存在 <code>LATERAL</code> 产生的跨层引用，系统会通过调用诸如 <code>IncrementVarSublevelsUp</code> 等逻辑来修正 <code>Var</code> 变量的层级深度（Sublevel）。并且通过 <code>CombineRangeTables</code> 合并底层 RangeTable (范围表) 中的依赖信息，确保即使是这种带有侧向引用的子查询也能在语义不变的前提下安全“拍平”。</p>
 <div style="break-before: page; page-break-before: always;"></div>
-<h1 id="外连接消除与无用连接移除-outer-join-elimination--join-removal"><a class="header" href="#外连接消除与无用连接移除-outer-join-elimination--join-removal">外连接消除与无用连接移除 (Outer Join Elimination &amp; Join Removal)</a></h1>
-<p>在经过了表达式级别的折叠与扁平化之后，PostgreSQL 优化器会尝试通过约束分析，尽可能精简查询树中的连接节点（Join Nodes）。精简的连接树不但执行效率高，同时也给了后续的动态规划/遗传算法更多排列组合的选择。</p>
-<p>这一步主要包含了两个阶段的优化：</p>
+<h1 id="外连接消除与连接移除-outer-join-elimination--join-removal"><a class="header" href="#外连接消除与连接移除-outer-join-elimination--join-removal">外连接消除与连接移除 (Outer Join Elimination &amp; Join Removal)</a></h1>
+<p>当查询树完成了表达式的重写和规范化之后，PostgreSQL 优化器会尝试通过逻辑推导和约束条件，精简查询树中不必要的表连接（Join）节点。
+一棵被修剪和化简过的查询树不仅提高了后续执行的效率，也极大地减少了动态规划或遗传算法在生成 Join Order 时需要枚举的组合空间。</p>
+<p>相关的优化逻辑主要分为两个阶段：</p>
 <ol>
-<li><strong>外连接降级/消除 (reduce_outer_joins)</strong></li>
-<li><strong>无用连接移除 (remove_useless_joins)</strong></li>
+<li><strong>外连接消除 (reduce_outer_joins)</strong></li>
+<li><strong>连接移除 (remove_useless_joins)</strong></li>
 </ol>
-<h2 id="1-外连接降级的原理与意义-reduce_outer_joins"><a class="header" href="#1-外连接降级的原理与意义-reduce_outer_joins">1. 外连接降级的原理与意义 (<code>reduce_outer_joins</code>)</a></h2>
+<hr>
+<h2 id="1-外连接消除-reduce_outer_joins"><a class="header" href="#1-外连接消除-reduce_outer_joins">1. 外连接消除 (<code>reduce_outer_joins</code>)</a></h2>
 <p><strong>源码位置</strong>：<code>src/backend/optimizer/prep/prepjointree.c</code>
-<strong>调用时机</strong>：它是由 <code>subquery_planner</code> 函数中调用的。</p>
-<p>外连接（Outer Join）通常会强制优化器遵循特定的连接顺序，因为 Nullable 一侧必须在关联后才能保留。<code>reduce_outer_joins</code> 的目的就是检查是否存在某些强有力的 <code>WHERE</code> 条件，使得原本的 Outer Join 可以退化为 Inner Join 甚至是 Anti Join。</p>
-<h3 id="11-两遍扫描机制-pass-1--pass-2"><a class="header" href="#11-两遍扫描机制-pass-1--pass-2">1.1 两遍扫描机制 (Pass 1 &amp; Pass 2)</a></h3>
-<p>为了减少不必要的递归，<code>reduce_outer_joins</code> 使用两阶段处理：</p>
+<strong>执行时机</strong>：由查询的主计划函数 <code>subquery_planner</code> 调度。</p>
+<p>外连接（Outer Join）相较于内连接（Inner Join），会限制优化器对表连接顺序的自由排列组合。<code>reduce_outer_joins</code> 的主要任务是遍历查询条件（如 <code>WHERE</code>），检查是否存在能够使外连接降级（由于 NULL 值过滤条件）并转化为安全且更高效的 Inner Join 或 Anti Join (反连接) 的情况。</p>
+<h3 id="11-两次遍历策略-pass-1--pass-2"><a class="header" href="#11-两次遍历策略-pass-1--pass-2">1.1 两次遍历策略 (Pass 1 &amp; Pass 2)</a></h3>
+<p>为了提升效率，<code>reduce_outer_joins</code> 使用了两轮过滤法：</p>
 <ul>
-<li><strong>Pass 1 (<code>reduce_outer_joins_pass1</code>)</strong>: 收集查询树底层的 <code>Relids</code>（涉及了哪些基础表），并快速标记哪些子树中<strong>真正包含外连接</strong>（<code>contains_outer</code>）。如果没有外连接，直接跳过整个复杂的分析。</li>
-<li><strong>Pass 2 (<code>reduce_outer_joins_pass2</code>)</strong>: 进入实际的检查和转换逻辑。</li>
+<li><strong>粗筛阶段 (Pass 1: <code>reduce_outer_joins_pass1</code>)</strong>: 遍历提取底层节点的 <code>Relids</code>（涉及的基础表），并标记查询中是否存在真正的外连接（设置标志位 <code>contains_outer</code>）。如果没有外连接存在，则立即返回，省去后续的处理开销。</li>
+<li><strong>重写阶段 (Pass 2: <code>reduce_outer_joins_pass2</code>)</strong>: 仅对确认含有外连接的查询部分，进行严密的逻辑推演和类型转化。</li>
 </ul>
-<h3 id="12-outer-到-inner-的降级"><a class="header" href="#12-outer-到-inner-的降级">1.2 Outer 到 Inner 的降级</a></h3>
-<p>其核心依靠提取过滤条件中的<strong>严格约束 (Strict Quals)</strong>。
-利用 <code>find_nonnullable_rels</code> 扫描 <code>WHERE</code> 子句。如果 <code>WHERE</code> 强制要求 Nullable Side 的某个引用列不能为空（比如 <code>LEFT JOIN B ON ... WHERE B.id &gt; 10</code>，当 B 补充 NULL 时，<code>NULL &gt; 10</code> 为 NULL/False 被淘汰），那么：</p>
+<h3 id="12-外连接向内连接的转化-outer-to-inner"><a class="header" href="#12-外连接向内连接的转化-outer-to-inner">1.2 外连接向内连接的转化 (Outer to Inner)</a></h3>
+<p>将外连接降级的核心在于寻找表达式中存在的<strong>严苛约束条件 (Strict Quals)</strong>。
+优化器会调用 <code>find_nonnullable_rels</code> 在条件子句中搜寻：是否某个条件要求原本由于外连接产生的 Null 值端，必须是个非空合法实体。
+例如，执行 <code>LEFT JOIN B ON ... WHERE B.id &gt; 10</code> 时。如果在执行左连接后 B 表的行以 NULL 补充，而在条件评估阶段遇到 <code>NULL &gt; 10</code> 会被判定为 False 而过滤掉这些行。那么这个保留了左侧不匹配记录的“左连接”其实和内连接没有任何区别。</p>
+<p>面对这种依赖性质：</p>
 <ul>
-<li><strong>LEFT JOIN</strong> 可以安全地转换为 <strong>INNER JOIN</strong>。</li>
-<li><strong>RIGHT JOIN</strong> 可以安全地转换为 <strong>LEFT JOIN</strong> 然后内部翻转，或者直接转为 <strong>INNER JOIN</strong>。</li>
-<li><strong>FULL JOIN</strong> 可以根据两边约束的情况降级为 LEFT、RIGHT 或是 INNER JOIN。</li>
+<li><strong>LEFT JOIN</strong> 会被转化为 <strong>INNER JOIN</strong>。</li>
+<li><strong>RIGHT JOIN</strong> 则可能转为 <strong>LEFT JOIN</strong>（同时翻转关联左右侧）或转为 <strong>INNER JOIN</strong>。</li>
+<li><strong>FULL JOIN</strong> 会根据左右侧各自的约束条件情况，降级成 LEFT JOIN、RIGHT JOIN，或直接化简为 INNER JOIN。</li>
 </ul>
-<h3 id="13-outer-到-anti-的转化"><a class="header" href="#13-outer-到-anti-的转化">1.3 Outer 到 Anti 的转化</a></h3>
-<p>外连接不仅可以被降阶为内连接，有时还可以变成反连接。
-利用 <code>find_forced_null_vars</code> 检查 <code>WHERE</code> 是否有显式要求变元为 NULL 的约束（例如 <code>LEFT JOIN B ON ... WHERE B.id IS NULL</code>）。
-如果是这样，那么这个 Join 明确就是用来找“匹配不上的行”，代码中会将该 <code>JOIN_LEFT</code> 转换为 <strong><code>JOIN_ANTI</code></strong>。Anti Join 在执行器阶段具有更早熔断的高效特性。</p>
-<h2 id="2-无用连接移除-remove_useless_joins"><a class="header" href="#2-无用连接移除-remove_useless_joins">2. 无用连接移除 (<code>remove_useless_joins</code>)</a></h2>
+<h3 id="13-外连接向反连接的转化-outer-to-anti"><a class="header" href="#13-外连接向反连接的转化-outer-to-anti">1.3 外连接向反连接的转化 (Outer to Anti)</a></h3>
+<p>除了转化为内连接，外连接在某些情况也可以转为反连接。
+通过调用 <code>find_forced_null_vars</code>，优化器会检查查询条件中是否明确要求连接生成的特定列必须为 NULL（常见的例子是 <code>LEFT JOIN B ON ... WHERE B.id IS NULL</code>）。
+在这种情境下，由于逻辑实际上是为了寻找无法在右表找到匹配记录的行，系统会将该 <code>JOIN_LEFT</code> 转换为 <strong><code>JOIN_ANTI</code> (反连接)</strong>。在物理执行层面，Anti Join 在找到第一个匹配项时就可以停止搜索，相比保留左连接具有显著的性能优势。</p>
+<hr>
+<h2 id="2-无用连接的移除-remove_useless_joins"><a class="header" href="#2-无用连接的移除-remove_useless_joins">2. 无用连接的移除 (<code>remove_useless_joins</code>)</a></h2>
 <p><strong>源码位置</strong>：<code>src/backend/optimizer/plan/analyzejoins.c</code>
-<strong>调用时机</strong>：它发生得晚一些，是在 <code>grouping_planner</code> -&gt; <code>query_planner</code> 的起始阶段，即准备构建底层路径（Scan / Join Paths）时进行。</p>
-<p>有时候我们连接了一张表，只是为了取个数据，但后来发现（由于视图展开、ORM 生成的过度复杂的 SQL 等原因）这张表输出的列根本没有任何用处，那我们能直接移除这个 JOIN 吗？
-如果这是一个 <code>LEFT JOIN</code>，并且满足某些严格的等价条件，就能做到。</p>
-<h3 id="21-移除的苛刻条件-join_is_removable"><a class="header" href="#21-移除的苛刻条件-join_is_removable">2.1 移除的苛刻条件 (<code>join_is_removable</code>)</a></h3>
-<p>要移除一个左连接的右表，必须同时满足以下苛刻条件：</p>
+<strong>执行时机</strong>：由 <code>query_planner</code> 的起始阶段进行调用，发生在生成扫描路径和连接路径的前夕。</p>
+<p>在复杂的应用或基于视图的查询中，常常包含对当前结果没有贡献的表关联。此时，优化器可以识别并彻底移除某些表连接（通常针对 <code>LEFT JOIN</code> 的右侧表）。</p>
+<h3 id="21-移除的判断依据-join_is_removable"><a class="header" href="#21-移除的判断依据-join_is_removable">2.1 移除的判断依据 (<code>join_is_removable</code>)</a></h3>
+<p>要安全地将 <code>LEFT JOIN</code> 中的右侧表移除，必须同时满足以下严苛的条件验证：</p>
 <ol>
-<li><strong>没有列输出</strong>：Nullable Side（被连接的右表）的任何字段（包括 PlaceholderVars) 都<strong>没有</strong>被上层的 <code>TargetList</code>、<code>HAVING</code>、<code>ORDER BY</code> 引用（检查 <code>attr_needed</code> 集合）。</li>
-<li><strong>不改变左表的基数 (Cardinality)</strong>：这个最为关键。不能因为移除右表，导致原本左表匹配出多行的结果减少，或者原本膨胀的行数变少。因此右表的关联必须是<strong>最多匹配一行</strong>。
+<li><strong>没有在上层提供输出列</strong>：被连接的右表中的列，没有在更高层的 <code>TargetList</code> (选择目标集)、<code>HAVING</code> 等子句中被引用（优化器会通过 <code>attr_needed</code> 属性检查）。</li>
+<li><strong>不改变基数 (Cardinality)</strong>：移除右表不能影响结果集行数或数据唯一性。也就是说，右表能够提供的连接匹配项，对于左表的每一行，<strong>必须且只能匹配出最多一行</strong>，否则会引发由于交叉连接产生的行数变动。
 <ul>
-<li>优化器会调用 <code>rel_is_distinct_for</code>。</li>
-<li>根据连接条件，判断右表在这些条件限制下是否呈现<strong>唯一性 (Unique)</strong>。</li>
-<li>这通常依赖于数据库中建立的<strong>唯一索引 (Unique Index)</strong> 或 <strong>主外键约束 (Foreign Key)</strong>，且连接符必须是可合并连接的等值运算符。</li>
+<li>优化器会通过 <code>rel_is_distinct_for</code> 等逻辑。</li>
+<li>检查连接条件是否能保证右表记录的<strong>唯一性 (Unique)</strong>。</li>
+<li>这通常依赖于数据库里的<strong>唯一索引 (Unique Index)</strong> 或<strong>主外键约束 (Foreign Key)</strong>，且这些关联必须使用等值操作符（Mergejoinable Equality Operators）。</li>
 </ul>
 </li>
 </ol>
-<h3 id="22-全局状态清理-remove_leftjoinrel_from_query"><a class="header" href="#22-全局状态清理-remove_leftjoinrel_from_query">2.2 全局状态清理 (<code>remove_leftjoinrel_from_query</code>)</a></h3>
-<p>如果这个无用连接成功被认定为可以移除，这绝不仅仅是在查询树里删掉一个节点这么简单。
-因为此时规划器已经构建了诸如 <code>RestrictInfo</code>、<code>EquivalenceClass</code>（等价类）甚至是各种 <code>PlaceHolderVar</code>。规划器必须倒查并清理由于移除了该表（及其 Relid，甚至其特有的 Outer Join Relid <code>ojrelid</code>）而受到关联的所有辅助结构，确保后续基于 DP（动态规划）产生的子集连接搜索不会引用到幽灵节点。</p>
+<h3 id="22-状态清理与重组-remove_leftjoinrel_from_query"><a class="header" href="#22-状态清理与重组-remove_leftjoinrel_from_query">2.2 状态清理与重组 (<code>remove_leftjoinrel_from_query</code>)</a></h3>
+<p>如果一段关系满足了被抛弃的条件，优化器不仅要在查询树结点上剥除该分支，还需要清理那些由此连带创建的衍生结构。
+在判定废弃前，规划器已经为其建立了例如约束信息 <code>RestrictInfo</code>、等价类 <code>EquivalenceClass</code>，甚至还有部分 <code>PlaceHolderVar</code>。
+在确认移除该表及其相关的 <code>Relid</code>（以及包含的 Outer Join Relid <code>ojrelid</code>）后，规划器必须进行全覆盖的清算操作，把涉及这些表的关联辅助结构全部删去，以免这些废弃的数据状态影响接下来的动态规划寻优操作。</p>
 <div style="break-before: page; page-break-before: always;"></div>
-<h1 id="单表扫描大军的集结-access-paths"><a class="header" href="#单表扫描大军的集结-access-paths">单表扫描大军的集结 (Access Paths)</a></h1>
-<p>在 PostgreSQL 查询优化的漫长征途中，一旦查询树（Query Tree）熬过了逻辑重写、子查询提升、表达式扁平化以及外联结斩除等一系列严酷的预处理洗礼，规划器（Planner）便会正式拔剑，跨入整个数据库引擎最核心、也最见真章的战场——<strong>基于代价的优化阶段（Cost-Based Optimization, CBO）</strong>。</p>
-<p>代价优化的第一落子，也是构筑整棵物理执行大树的绝对基石，便是要为查询里牵涉到的每一个基础门派（Base Relation，即基表），推演出所有能走的通的<strong>单表访问路径（Single Relation Access Paths）</strong>。在这个环节下，不管是笨重的全表顺序扫描、花样百出的各类索引奇兵，还是火力全开的并行扫荡模式，都会被事无巨细地拉到明面上排兵布阵，只待后续的打分淘汰与拼表大检阅。</p>
-<p>本章节将结合 PostgreSQL 18.1 的滚烫源码（主战区在 <code>src/backend/optimizer/path/allpaths.c</code> 和 <code>indxpath.c</code>），带你深度潜入这套单表扫描路径的生成罗盘与暗含的数据兵法。</p>
+<h1 id="单表扫描路径生成-access-paths"><a class="header" href="#单表扫描路径生成-access-paths">单表扫描路径生成 (Access Paths)</a></h1>
+<p>在 PostgreSQL 的查询优化流程中，当查询树完成了逻辑重写、子查询提升、表达式扁平化及外连接消除等预处理步骤后，规划器（Planner）将进入基于代价的优化阶段（Cost-Based Optimization, CBO）。</p>
+<p>代价优化的首要任务，是为查询中涉及的每一个基表（Base Relation）计算可用的<strong>单表访问路径（Single Relation Access Paths）</strong>。在这个环节，无论是顺序扫描、索引扫描还是并行扫描，都会被枚举和评估，为后续的代价比较和表连接（Join）提供基础。</p>
+<p>本章结合 PostgreSQL 18.1 源码（主要位于 <code>src/backend/optimizer/path/allpaths.c</code> 和 <code>indxpath.c</code>），介绍单表扫描路径的生成机制及其数据结构。</p>
 <hr>
-<h2 id="1-大管家出面make_one_rel-的统筹"><a class="header" href="#1-大管家出面make_one_rel-的统筹">1. 大管家出面：<code>make_one_rel</code> 的统筹</a></h2>
-<p>生成基础路径的浩大工程，全权由核心大管家函数 <code>make_one_rel()</code>（盘驻于 <code>allpaths.c</code>）一手统筹。顾名思义，它最终的野望，是把查询里散落四方的所有表关系（Relations）像揉面团一样“揉合”成一个终极整体（One Rel），以此代表最终呼之欲出的查询结果。</p>
-<p>不过在此之前，它必须先给手底下每一个单独的基表发放武器，武装到牙齿。</p>
-<h3 id="11-两段式的谨慎拆解"><a class="header" href="#11-两段式的谨慎拆解">1.1 两段式的谨慎拆解</a></h3>
-<p>在 <code>make_one_rel</code> 的营房里，对单个基表的锤炼被极其考究地硬拆成了两大道工序：</p>
+<h2 id="1-扫描路径生成入口make_one_rel"><a class="header" href="#1-扫描路径生成入口make_one_rel">1. 扫描路径生成入口：<code>make_one_rel</code></a></h2>
+<p>生成基础路径的工作主要由 <code>make_one_rel()</code> 函数（位于 <code>allpaths.c</code>）统筹。它的最终目标是确定多表连接的最佳顺序，但在开始表连接之前，它必须先为每个基表生成访问路径。</p>
+<h3 id="11-两阶段生成机制"><a class="header" href="#11-两阶段生成机制">1.1 两阶段生成机制</a></h3>
+<p>在 <code>make_one_rel</code> 中，单个基表的路径生成分为两个主要阶段：</p>
 <ol>
-<li><strong>摸清家底 (<code>set_base_rel_sizes</code>)</strong>：这步纯干算盘活儿，先摸透估算出这表会吐出多少行（Rows）、身段有多宽（Width）等一系列统计学底牌。</li>
-<li><strong>铺设战道 (<code>set_base_rel_pathlists</code>)</strong>：手握上面算出的体量底牌后，真刀真枪地开始为其幻化出由磁盘吸出数据的各种物理道路（Path）。</li>
+<li><strong>估算规模 (<code>set_base_rel_sizes</code>)</strong>：首先估算该表的输出行数（Rows）和行宽（Width）等统计信息。</li>
+<li><strong>生成路径 (<code>set_base_rel_pathlists</code>)</strong>：结合上一步估计的规模，生成读取该表的物理路径（Path）。</li>
 </ol>
-<p><strong>为什么要搞得这么神经兮兮非得切分两阶段？</strong>
-这是因为后边那种大杀器——并行查询，以及极其贼溜的参数化路径，根本离不开对表体量的精准把脉！
-举个典型的例子，要是某个表单薄得很，几页纸就写完了，优化器在估算时就会毫不留情地给它按下一个<strong>拒绝开多线程的红印（Cancel consider_parallel）</strong>。如果边估算边筑路，很容易导致前面的路修歪了，错失掉获得全局精准判断或是横攀比对的千载良机。</p>
-<h3 id="12-reloptinfo情报的集大成容器"><a class="header" href="#12-reloptinfo情报的集大成容器">1.2 <code>RelOptInfo</code>：情报的集大成容器</a></h3>
-<p>在踏入筑路阶段时，每张基表、哪怕是合并后的中间态或是子查询，都会被极为隆重地封装进一个块头巨大且贯穿始终的情报中心结构体——<strong><code>RelOptInfo</code></strong>（Relation Optimization Info，定义于 <code>nodes/pathnodes.h</code> 这个大本营）。</p>
-<p>在这造路一战中，<code>RelOptInfo</code> 有几个命脉般的心腹字段：</p>
+<p><strong>分阶段的原因：</strong>
+这是因为并行查询和参数化路径的判定非常依赖对表规模的精确估计。例如，如果优化器在估算时发现一个表的数据量非常小，就会将 <code>consider_parallel</code> 标记为 false，从而跳过并行扫描的路径生成。分离规模估算和路径生成，可以为全局规划提供更准确的比对基准。</p>
+<h3 id="12-reloptinfo关系优化信息"><a class="header" href="#12-reloptinfo关系优化信息">1.2 <code>RelOptInfo</code>：关系优化信息</a></h3>
+<p>在规划阶段，每张基表（包括中间结果和子查询）都会被封装为一个重要的结构体——<strong><code>RelOptInfo</code></strong>（Relation Optimization Info，定义于 <code>nodes/pathnodes.h</code>）。</p>
+<p>在路径生成阶段，<code>RelOptInfo</code> 包含以下几个核心字段：</p>
 <ul>
-<li><strong><code>rows</code> / <code>reltarget</code></strong>: 死死捏着估算输出的基表行数和列宽指标，这俩直接咬死了随后所有扫描代价的喉咙。</li>
-<li><strong><code>baserestrictinfo</code></strong>: 也就是大家最为眼熟的 <code>WHERE</code> 过滤条件。在逻辑优化阶段，它们早就被肢解并隐式绑定成了带有 AND 血缘的约束限制表（<code>RestrictInfo</code> 的 List）。</li>
-<li><strong><code>pathlist</code></strong>: 这是一个命脉链表（List）。在这个档口，由 <code>set_base_rel_pathlists</code> 各种法术<strong>疯狂衍生出来的五花八门的扫描路径（Path）小队，都会乖乖在这里挂单报道</strong>。</li>
-<li><strong><code>cheapest_startup_path</code> / <code>cheapest_total_path</code></strong>: 当所有的跑法都被丢进沙盘试跑过后，优化器会极其功利地从中提拔出两位天选之子——<strong>拔脚开跑代价最小的</strong>和<strong>全盘跑完总折损最低的</strong>，将它俩当作“状元”被供奉缓存于此，以便日后随叫随到，快速入局。</li>
+<li><strong><code>rows</code> / <code>reltarget</code></strong>: 预估的输出行数和列宽，直接影响后续的扫描代价计算。</li>
+<li><strong><code>baserestrictinfo</code></strong>: 与当前表相关的 <code>WHERE</code> 过滤条件，已被解析为 <code>RestrictInfo</code> 构成的列表。</li>
+<li><strong><code>pathlist</code></strong>: 一个链表（List），存放由 <code>set_base_rel_pathlists</code> 生成的候选扫描路径（Path）。</li>
+<li><strong><code>cheapest_startup_path</code> / <code>cheapest_total_path</code></strong>: 记录了执行代价最低的两条评估结果——<strong>启动代价最小的路径</strong>和<strong>总代价最低的路径</strong>，它们会被缓存以便后续快速选用。</li>
 </ul>
 <hr>
-<h2 id="2-扫街派顺序全表扫描-sequential-scan-与群狼并行"><a class="header" href="#2-扫街派顺序全表扫描-sequential-scan-与群狼并行">2. 扫街派：顺序全表扫描 (Sequential Scan) 与群狼并行</a></h2>
-<p>顺序全表扫描（SeqScan），可以说是任何一棵基表在这个世上活下去的“最低兜底生命线”。就算你没建半个索引、就算代价高破天际，数据库也能硬着头皮，像推土机一样从硬盘上逐页刮尽全表，死抠出正确答案。</p>
-<p>在 <code>allpaths.c</code> 下属的 <code>set_plain_rel_pathlist</code> 行省里：</p>
-<h3 id="21-兜底路线create_seqscan_path"><a class="header" href="#21-兜底路线create_seqscan_path">2.1 兜底路线：<code>create_seqscan_path</code></a></h3>
-<p>优化器绝不废话，一上来就会塞入一条朴实无华的 <code>SeqScan</code> 路径：通过底层的 <code>add_path(rel, create_seqscan_path(root, rel, required_outer, 0))</code> 拍板钉钉。
-顺序扫描的物理直觉就是顺着堆表（Heap Table）的底层房客分布，从第一号房（Block 0）老老实实一直敲门敲到最后一位。</p>
+<h2 id="2-顺序扫描-sequential-scan-与并行扫描"><a class="header" href="#2-顺序扫描-sequential-scan-与并行扫描">2. 顺序扫描 (Sequential Scan) 与并行扫描</a></h2>
+<p>顺序全表扫描（SeqScan）是最基础的访问方式。当缺乏可用索引或索引代价过高时，数据库会通过遍历表的数据块来读取记录。</p>
+<p>在 <code>allpaths.c</code> 的 <code>set_plain_rel_pathlist</code> 函数中：</p>
+<h3 id="21-基础顺序扫描create_seqscan_path"><a class="header" href="#21-基础顺序扫描create_seqscan_path">2.1 基础顺序扫描：<code>create_seqscan_path</code></a></h3>
+<p>优化器默认会添加一条 <code>SeqScan</code> 路径：通过调用 <code>add_path(rel, create_seqscan_path(root, rel, required_outer, 0))</code> 实现。
+顺序扫描按照堆表（Heap Table）的物理存储顺序逐块读取。</p>
 <ul>
-<li><strong>代价勒索要素</strong>：这个推土机的油耗其实很好算——主要就看这表占了多少个地盘（<code>rel-&gt;pages</code>），这锁死了连续猛读的 I/O 车马费；其次看表里到底住了多少口人（<code>rel-&gt;rows</code> / CPU filtering），这决定了 CPU 小人每条拉出来检查对账的心力损耗。</li>
+<li><strong>代价组成</strong>：主要由表占用的页数（<code>rel-&gt;pages</code>）决定连续 I/O 的开销，其次由行数（<code>rel-&gt;rows</code>）决定 CPU 进行条件过滤的开销。</li>
 </ul>
-<h3 id="22-群狼撕咬并行化扫描-create_plain_partial_paths"><a class="header" href="#22-群狼撕咬并行化扫描-create_plain_partial_paths">2.2 群狼撕咬：并行化扫描 <code>create_plain_partial_paths</code></a></h3>
-<p>自从 PostgreSQL 点亮了查询并行化这棵科技树后，慢吞吞的 SeqScan 迎来了一位极具野性与暴力美学的孪生兄弟——<strong>部分顺序扫描（Partial Sequential Scan）</strong>。
-紧跟着推土机的脚印，优化器立马会凑上去盘算：</p>
+<h3 id="22-并行化扫描-create_plain_partial_paths"><a class="header" href="#22-并行化扫描-create_plain_partial_paths">2.2 并行化扫描 (<code>create_plain_partial_paths</code>)</a></h3>
+<p>在支持并行查询后，系统提供了<strong>部分顺序扫描（Partial Sequential Scan）</strong>。
+在添加了基础的顺序扫描之后，优化器会检查是否符合并行条件：</p>
 <pre><code class="language-c">if (rel-&gt;consider_parallel &amp;&amp; required_outer == NULL)
     create_plain_partial_paths(root, rel);
 </code></pre>
-<p>一钻进 <code>create_plain_partial_paths</code> 的窝里，系统立刻会吹哨喊来算账先生 <code>compute_parallel_worker()</code>。这先生会根据当前这张表的腰围体量，套用一系列晦涩的数学对数阈值，去精打细算出<strong>到底值不值得叫几个闲散的后台劳动力（Background Workers）过来一并上阵开撕</strong>。
-一旦拍板了打工人口数，就会调用 <code>add_partial_path</code> 分裂出一条挂着 <code>parallel_workers</code> 将军衔的分支战线。
-<em>需要特别点破的是：这里叫 partial (部分/残缺)，倒不是说大家各扫自家门前雪，而是这帮 worker 在底层共用一个抢块计数器，谁手快谁抢那个数据块，最后战果必须得汇总上交到最顶层的那个大太监 <code>Gather</code> 节点手里统一发落。</em></p>
+<p>如果条件允许，内部核心逻辑调用 <code>compute_parallel_worker()</code> 根据数据规模和相关阈值参数计算出需要启动的<strong>后台工作进程 (Background Workers)</strong> 数量。
+当决定并行执行后，系统会通过 <code>add_partial_path</code> 添加一条指定了 <code>parallel_workers</code> 的分支战线。多个 Worker 共享数据块分配游标，并发读取数据。</p>
 <hr>
-<h2 id="3-刺客信条索引扫描-index-paths-深度解密"><a class="header" href="#3-刺客信条索引扫描-index-paths-深度解密">3. 刺客信条：索引扫描 (Index Paths) 深度解密</a></h2>
-<p>如果只会大声喧哗地全盘推平，那显然不够高明。对于绝大多数的 OLTP 事务秒级响应，以及那种只打算在茫茫人海里揪出极个别目标（所谓的高选择性 High Selectivity）的任务，拔出 B-Tree 这种能让耗时呈断崖式跳水暴跌的索引匕首，才是正途。</p>
-<p>紧随其后，<code>set_plain_rel_pathlist</code> 便会推开 <code>indxpath.c</code> 里的刺客大堂——<code>create_index_paths()</code> 的暗门。这个函数的算计极深，它会如鬼魅般去尝试穷尽麾下所有的单柄短剑（单索引），甚至还有各种古怪的双剑合璧（Bitmap Scan 位图组合技）刺杀术。</p>
-<h3 id="31-经典重现-index-scan传统的单锋回马枪"><a class="header" href="#31-经典重现-index-scan传统的单锋回马枪">3.1 经典重现 <code>Index Scan</code>：传统的单锋回马枪</a></h3>
-<p>当它通过向导 <code>build_index_paths</code> 探到查询 <code>WHERE</code> 里塞的暗号（比方说 <code>id = 5</code>）能够正好和系统账簿上记录的某个剑客 <code>IndexOptInfo</code>（索引特长）对上眼时，就会干脆利落地产出一条标准的 <code>Index Scan Path</code>。</p>
-<p><strong>命中与反噬</strong>：
-普通的索引扫就算再准，哪怕它在聚簇树的枝繁叶茂间电光火石般锁死了 <code>id = 5</code> 的下落，并一把揪出了它的命门 <code>TID</code>（Tuple ID），它依旧逃脱不了一个极其狼狈的命运——它被迫还得使出一招<strong>回马枪（Heap Fetch 回表）</strong>。它得顺着 TID 原路杀回堆表（Heap）的数据块里，把那条血淋淋的记录全须全尾地生拽上来。因为只有这样，它才能去接着核对那些没上索引的附属条件（比如 <code>name = 'pg'</code>) 到底还不合规矩。</p>
-<h3 id="32-刺客的巅峰体验-index-only-scanvm-辅佐下的无影手"><a class="header" href="#32-刺客的巅峰体验-index-only-scanvm-辅佐下的无影手">3.2 刺客的巅峰体验 <code>Index Only Scan</code>：VM 辅佐下的无影手</a></h3>
-<p>但这毕竟太跌份了，于是 <code>build_index_paths</code> 还会暗自推演一招极其优美的变种武学。
-如果在很多情况下，你的 SQL 写得十分干净利落，你只要取的首级部位，正好全在那把索引的剑鞘上刻着呢（比如只写了 <code>SELECT id FROM table WHERE id = 5</code>）。在这种如有神助的覆盖索引（Covering Index）梦幻情境下，刺客其实<strong>压根就不需要，也绝对不应该</strong>再回头去去翻那种又脏又沉的堆表黑块（Heap Page）。</p>
-<p><strong>致命破绽与 VM 面纱（Visibility Map）</strong>：
-然而理想很丰满，PG 的并发世界很骨感。PG 死磕着那套经典的多版本并发控制（MVCC），而且极其偏执地把死活状态版本号跟数据本体绑在一起。这意味着，就算你只用揪出索引键，你也没法光凭索引拍胸脯保证这行记录如今在这个时空快照里**是不是已经是一具腐臭的死尸（Dead Tuple）**了，或者是不是还处于某个隐秘在途事务的庇护下对你不可见——因为所有的生死簿印记（<code>xmin</code>、<code>xmax</code>）全藏在堆表地底下的 Header 标头里，索引条目上光溜溜的什么提示都没有！
-为了能练成这套不用回表的无影手 <code>Index Only Scan</code> 盖世神功，PG 给索引扫配备了一张通灵卷轴——<strong>VM（Visibility Map，可见性监控网）</strong>。
-在 <code>create_index_paths</code> 权衡利弊时，会赶紧偷瞟一眼目标表所在的那个内存块在 VM 里的明灯位：只有当该块上记录着所有人都是清白干净的 <code>all-visible</code>（意味着这个块最近没有陷入在跑其他肮脏事务的纷争泥潭，绝对可以放行），优化器底气才硬，敢于放手免去那恶心的 Heap Fetch 回源操作。要不然，哪怕你要的渣子全在索引上，优化器也得乖乖加上回表耗损的巨额账单比重，甚至直接将其打回冷宫退化成平庸普通的 Index Scan。</p>
-<h3 id="33-魔武双修-bitmap-indexheap-scan-位图连招扫描"><a class="header" href="#33-魔武双修-bitmap-indexheap-scan-位图连招扫描">3.3 魔武双修 <code>Bitmap Index/Heap Scan</code> (位图连招扫描)</a></h3>
-<p>假使哪天碰上了不按套路出牌的主儿，你的 <code>WHERE</code> 里给出的不是一刀切的标靶，而是撒网式的范围扫，或者甚至祭出了 <code>OR</code> 将好几个不同的字段索引用法强行糅杂在一起呢（类似 <code>WHERE age = 20 OR salary &gt; 8000</code>）？</p>
-<p>这时候不管派哪个单一的 <code>IndexScan</code> 上场，它都会因为要在不同的索引老巢间疲于奔命而带来灾难性、令人崩溃的随机 I/O 操作狂潮 （Random I/O）。于是优化器一拍脑门，搞出了一套及其妖孽的二面绞杀战法——<strong>位图扫描大阵（Bitmap Scan）</strong>。
-在 <code>indxpath.c</code> 的阵眼深处，全权交由 <code>generate_bitmap_or_paths</code> 来主理发落。</p>
+<h2 id="3-索引扫描-index-paths-机制解析"><a class="header" href="#3-索引扫描-index-paths-机制解析">3. 索引扫描 (Index Paths) 机制解析</a></h2>
+<p>对于需要高选择性过滤（High Selectivity）的查询，B-Tree 等索引能显著减少数据读取量，从而提升查询效率。
+在 <code>set_plain_rel_pathlist</code> 之后，系统调用 <code>indxpath.c</code> 中的 <code>create_index_paths()</code>，生成多种基于索引的候选路径。</p>
+<h3 id="31-index-scan标准的索引扫描"><a class="header" href="#31-index-scan标准的索引扫描">3.1 <code>Index Scan</code>：标准的索引扫描</a></h3>
+<p>当查询的 <code>WHERE</code> 条件与某个建立的索引 (<code>IndexOptInfo</code>) 匹配时，<code>build_index_paths</code> 会生成一条 <code>Index Scan Path</code>。</p>
+<p><strong>回表 (Heap Fetch)</strong>：
+标准的索引扫描在找到符合条件的索引条目和目标 <code>TID</code>（Tuple ID）后，仍需要回表读取堆表（Heap）中的实际记录块，以提取 SELECT 所需的其他列数据及进行多版本可见性（MVCC）的判断。</p>
+<h3 id="32-index-only-scan覆盖索引与可见性映射"><a class="header" href="#32-index-only-scan覆盖索引与可见性映射">3.2 <code>Index Only Scan</code>：覆盖索引与可见性映射</a></h3>
+<p>如果查询的目标列完全被索引覆盖（如 <code>SELECT id FROM table WHERE id = 5</code>），则可能不需要回表读取。</p>
+<p><strong>MVCC 挑战与 VM (Visibility Map) 设计</strong>：
+由于 PostgreSQL 在 MVCC 机制下，通过表记录的标头 (<code>xmin</code>, <code>xmax</code>) 来判断事务可见性，索引条目本身通常不包含可见性信息。
+为了减少回表开销，PostgreSQL 使用了 <strong>VM (Visibility Map，可见性映射文件)</strong>。在考虑 <code>Index Only Scan</code> 时，只有当 VM 标记对应数据块为 <code>all-visible</code> （即该块中的所有数据对所有活跃事务清晰可见）时，查询此时可以直接使用索引数据而跳过回表，进一步降低代价。</p>
+<h3 id="33-bitmap-indexheap-scan-位图扫描"><a class="header" href="#33-bitmap-indexheap-scan-位图扫描">3.3 <code>Bitmap Index/Heap Scan</code> (位图扫描)</a></h3>
+<p>当查询包含多个涉及不同索引的条件，或者使用 <code>OR</code> 和 <code>IN</code> 等查询模式时，独立的 <code>IndexScan</code> 在频繁回表时可能带来大量的随机 I/O (Random I/O) 操作。为此，系统采用了**位图扫描（Bitmap Scan）**方案。在 <code>indxpath.c</code> 中，主要由 <code>generate_bitmap_or_paths</code> 处理。</p>
 <ul>
-<li><strong>上半场: 潜龙在渊 <code>Bitmap Index Scan</code></strong>：先让各路刺客按兵不动，绝对不许碰真表数据一根毫毛。这帮家伙仅仅是钻进那些不同的索引树洞里各自疯狂刺探。一旦对上了号，就在自个儿拉起的一个内存虚拟大方阵里（通常是按物理 Page 级别划分的长布阵），把这行对应的站位标识符（Bit 标志位）点亮成嚣张的满血全变位 <code>1</code>。</li>
-<li>妙就妙在这里，如果这两个门派的活儿是 <code>AND</code> 交集或 <code>OR</code> 并集的关系，因为弄回来的全都是干干净净的纯纯内存比特黑白点阵，在内存大军中原地进行**按位与、按位或操作（BitmapAnd / BitmapOr）**那速度直叫一个快如闪电，合并过程丝滑得不可理喻。</li>
-<li><strong>下半场: 图穷匕见 <code>Bitmap Heap Scan</code></strong>：等到终于揉出最后一张硕大无比的手绘通缉 Bitmap 全图后，再全副武装拿着这张终极名录杀向真表据点。因为这次是严格顺着物理块的序列号地址，一路平推过去只敲亮着 <code>1</code> 的门。这一手直接将可怕的随机四散冲击，生生化骨绵掌般转化为极其优雅且无害的<strong>准顺序连续读取 (Sequential IO) 降维打击</strong>！从而极其体面地把原本成千上万碎玻璃片般的磁盘寻道消耗抹杀殆尽。这是一门极其蕴藏大智慧的镇派神功。</li>
-</ul>
-<p><strong>唯一的代价与硬伤</strong>：既然 Bitmap Heap Scan 是生拼硬凑靠物理排座位找过去的，那它吐出来的 Record 人潮当然全无当初那种“依山傍水天然的键值序列美感”。如果你老人家在上头还蛮横地强加了一手 <code>ORDER BY age</code>，那它将面对再也调借不出现成有序气场的尴尬境界，被逼出原形，迫使上层主管含泪自掏腰包，强行祭出那死慢死慢的内存 <code>Sort</code> 节点重新排队。</p>
-<hr>
-<h2 id="4-千丝万缕的伏笔参数化路径-parameterized-paths-的精妙借力"><a class="header" href="#4-千丝万缕的伏笔参数化路径-parameterized-paths-的精妙借力">4. 千丝万缕的伏笔：参数化路径 (Parameterized Paths) 的精妙借力</a></h2>
-<p>刚才说的那堆寻常手段，多半只有闭门造车看看自家 <code>baserestrictinfo</code> 的时候才顶用。可你不要忘了，PostgreSQL 在下盘做战略推演的时候，眼光向来毒辣且超前，它老早就已经在做大名鼎鼎、且极其恶心的**嵌套循环大乱斗（Nestloop Join）**的最坏打算了！</p>
-<p>你试想这么一场修罗场：大表 A 跟小表 B 狭路相逢，硬来了一句 <code>A JOIN B ON A.val = B.id</code>。
-在这场厮杀里，要是小表 B 命苦被当成天天被翻牌子的那个被驱动内表，如果优化器只给它配了一把干干瘪瘪不带配件的扫描破枪，那不管老大 A 丢什么砖头过来，可怜的 B 全得从头扫到尾复读机一遍，代价简直要撕裂苍穹！但如果我能在前面留个后门插槽，把 <code>A.val</code> 作为一个**传递在途流转的活动变量引子（Parameter）**硬塞到 B 表的肚子里，等 B 在底层掏枪（调用索引）之前就能做到拔得头筹前置过滤呢？</p>
-<ul>
-<li>在 PG 的黑话里头，这就叫神鬼莫测的<strong>参数化借力路径 (Parameterized Path)</strong>。</li>
-<li>在这个层面上，<code>PG</code> 优化器不惜血本引入了特制机关组件：<code>ParamPathInfo</code>（参数化信息引信）。在操刀 <code>create_index_paths</code> 斩荆披棘的时候，优化器绝不满足只顾生造出针对 B 表自身狭隘小圈子过滤的死路径；它还会“贼溜溜”地探出头去扒一眼总司令部的连接缓冲区账目，看一眼 B 迟早要跟外人媾和勾搭上时，能不能巧借东风，顺手牵羊用别人嘴里说出的那些等值交换条件，彻底激活 B 自带那把原本生着锈的牛逼索引屠龙刀！</li>
-<li>但凡有一丝丝机会，PG 就会连夜打造一套夹带了所谓 <code>lateral_relids</code>（暗语：该刺客必须要依靠哪些外界供养方势力撑腰）烙印的高阶变异索引奇袭扫荡方案。这种路径如果是脱离开外层单挑，它的单独执行存活可行性差到极点甚至是 <code>0</code>！但这玩意一旦融入外围庞大的 NestLoop 巨型战争绞肉机中，它绝对会摇身一变，成为以极低损耗力挽千军之战局的绝杀神兵！而现如今大火的 <code>LATERAL</code> 关键字旁支查询，正是借由这一神坛基座，才得以在表象大发异彩、耀武扬威的。</li>
+<li><strong>位图索引扫描 <code>Bitmap Index Scan</code></strong>：各个索引分支独立检索，且不立刻回拉真实数据，而是记录下符合条件的表块位点，在内存中形成一个按位标识（Bit）的图谱。</li>
+<li><strong>位图操作 <code>BitmapAnd</code> / <code>BitmapOr</code></strong>：通过对不同的索引结果图谱进行按位与、按位或操作，快速合并出最终的目标图谱。</li>
+<li><strong>位图堆表扫描 <code>Bitmap Heap Scan</code></strong>：根据合并后的位图结果，严格按照物理数据块地址的前后顺序去批量读取真表。这种方式将大量分散的随机读取转化为<strong>类似顺序读取的连续 I/O 查询</strong>，大幅减少了磁盘寻址时间。</li>
 </ul>
 <hr>
-<h2 id="5-最残忍的杀戮角斗局pruning-剪枝与-add_path-门神"><a class="header" href="#5-最残忍的杀戮角斗局pruning-剪枝与-add_path-门神">5. 最残忍的杀戮角斗局：Pruning 剪枝与 <code>add_path</code> 门神</a></h2>
-<p>历经了上头这一番狂轰滥炸式的头脑风暴，别以为只有惊世大查询才开枝散叶，这哪怕就是遇上了最普普通通的一只底层阿猫阿狗表，优化器都会为其凭空捏造出几十上百条奇拉八怪的奇特跑法路线 Path（有纯靠脚走的 SeqScan, 骑马的特指索引X, 坐轿的特指索引Y, 双人抬轿 Bitmap 组合花枪，还有群殴并行…）。</p>
-<p>要是一直这么任由它们子子孙孙无穷衍育下去，还没等最后真正两两大联表，光是那指数级膨炸出来的怪异连接组合数量（Path Explosion），就足以把机器的内存条活活吸干爆裂！所以，高高在上的主优化器必须时不时地举起屠刀清理门户，这就是血腥的——<strong>路径剪枝大逃杀（Path Pruning）</strong>。</p>
-<p>那些被妄想出的不管好的坏的成百上千条扫描捷径，绝不会平白无故就被拉到名册 <code>RelOptInfo-&gt;pathlist</code> 队伍里头滥竽充数混饭吃。所有角色统统必须先排着队，去会一会那唯一掌控着生杀大权的镇派老门神：极其无情的过滤审判函数 <strong><code>add_path(RelOptInfo *parent_rel, Path *new_path)</code></strong>。</p>
-<p><code>add_path</code> 躯体里深埋着一条类似于帕累托最优（Pareto Optimality）那般极其现实主义的丛林淘汰碾压法则。
-当某个怀揣着美梦的新生代 Path 来敲门想求录用挂单入册时，门神会拎着它的领子，把它跟 <code>pathlist</code> 门下那些早就占好席位的老骨头们展开一对一绝不留情的贴身死斗考核：</p>
+<h2 id="4-参数化路径-parameterized-paths-的运用"><a class="header" href="#4-参数化路径-parameterized-paths-的运用">4. 参数化路径 (Parameterized Paths) 的运用</a></h2>
+<p>在评估基表的访问路径时，PostgreSQL 能够前瞻多表连接（主要是嵌套循环连接 NestLoop Join）在实际执行时的需求。</p>
+<p>当大表 A 和小表 B 进行连接（如 <code>A JOIN B ON A.val = B.id</code>）时，若 B 作为被驱动的内表，可能会根据 A的每一行重复扫描全表。此时如果将关联条件（如 <code>A.val</code>）作为一个**在途传输参数（Parameter）**下移到 B 的扫描阶段，B 可以利用此参数在读取前提前应用索引过滤。</p>
+<ul>
+<li>在 PostgreSQL 术语中，这称为<strong>参数化借力路径 (Parameterized Path)</strong>。</li>
+<li>系统通过构造 <code>ParamPathInfo</code>（参数化信息），并在 <code>create_index_paths</code> 时生成不仅依赖自身 <code>WHERE</code> 条件、还依赖于外部关系过滤项的索引路径。这种设计虽然自身执行的可行性取决于外部条件，但在被 <code>NestLoop Join</code> 采纳后，可以大幅降低连接运算的全局代价。</li>
+</ul>
+<hr>
+<h2 id="5-路径剪枝-path-pruning-与-add_path-函数"><a class="header" href="#5-路径剪枝-path-pruning-与-add_path-函数">5. 路径剪枝 (Path Pruning) 与 <code>add_path</code> 函数</a></h2>
+<p>由于一条 SQL 可能会为每个基表生成多达几十条不同的扫描路径（如不同索引的单查、组合位图扫、并行等），如果全部保留它们将导致多表连接组合时发生指数级路径爆炸（Path Explosion）。为此，优化器采取了**路径剪枝（Path Pruning）**策略。</p>
+<p>所有的候选扫描路径都会通过统一的函数入口进行过滤校验：<strong><code>add_path(RelOptInfo *parent_rel, Path *new_path)</code></strong>。</p>
+<p><code>add_path</code> 会比较新路径和 <code>pathlist</code> 中现有的旧路径，评估是否保留新传入的路径：</p>
 <ol>
-<li><strong>赤裸裸的价码拼杀（Cost Fudge 模糊裁决）</strong>：门神会对比它俩起步开跑的消耗代价（<code>startup_cost</code>，也就是为了先吐出头一行能拿来应付限流 Limit 的启动预热花销）和跑到头的死磕总消耗（<code>total_cost</code>）。如果新来的选手两腿沉重，这俩盘条数值都输得死死地高于某个早就稳坐名录上的老混混。那不管怎么看你这新兵蛋子也就全是缺点一无是处了，门神当场将其拉走人道毁灭。（当然，在这个修罗场里 PG 非常细心地引入了极为微观大约在 <code>1e-10</code> 这等毫末级别的模糊缓冲乘数 <code>fuzz</code>，就是为了防着碰上了因为破烂浮点数对齐舍入那种让人无语的误差而被判冤死的情况发生）。</li>
-<li><strong>身带免死金牌的高等爵位排序特征 (Pathkeys) <strong>：这是 PG Planner 非常精妙、甚至是惊艳全场的一个反转后门大绝杀！万一出现了这么个局：新人初来乍到，新造的路子总消耗巨大看面相简直必死无疑。但是老路子弄出来的结果却是一盘毫无规律的粗暴散沙乱炖。而此新人路线（因为碰巧走了按键值生长的老牌 B-Tree 名门望族索引），这打娘胎里带出来的结果恰好完美迎合且对路了上一层长官急需的 <code>ORDER BY</code> 天生排序序列（自带光芒万丈的 <code>pathkeys</code> 特质）！
-这下门神可绝</strong>不敢单凭那一手账面上的烂开销就擅作主张把它给踢出局了</strong>！因为这新人相当于自带了军团极需的高阶战略免检福利，它为老东家提早绕开了跑到上头还要极其恶劣地外挂开辟巨无霸独立排序内存（那些恐怖的明文显式大 Sort 死结关卡）而变相立下战功，扭转乾坤！此时它非但不用死，更将被作为高贵的特型种子选手与老路径平起平坐被<strong>全数并存破格录用保留</strong>入军团名册里。</li>
+<li><strong>按代价修剪（Cost Fudge 裁决）</strong>：该函数会对新路径和已有路径的起步代价（<code>startup_cost</code>）与总消耗代价（<code>total_cost</code>）进行比较。如果一条新路径在启动代价和总代价上都显著高于现有的某条路径，则该新路径被认为劣势明显，将被直接淘汰。系统在比较时引入了一个极小比例（如 <code>fuzz</code> 系数<code>1e-10</code>级别）的缓冲乘数来忽略微小的舍入误差。</li>
+<li><strong>受排序属性影响的特例 (Pathkeys 的保护)</strong>：当一条新路径因为执行效率稍慢，原本要被淘汰，但它附带的输出特征恰好满足了全局必要的排序序列（即具备 <code>pathkeys</code> 排序特质，如依靠 B-Tree 生成的顺序）时，它有可能不会被直接剔除。预先排好序的路径在后续的 <code>ORDER BY</code> 或 <code>Merge Join</code> 中可以免除巨大的重新排序开销，因此 <code>add_path</code> 将会根据排序价值对其通融和保留。</li>
 </ol>
-<p>等最终肃清淘汰干净了那些里外各个层面（既拼不过出场穷尽血量、又拿不出半点特殊高阶花招特质收益）全部都一无是处的杂鱼淘汰品以后，留在那个历经千锤百炼战火洗过的神圣 <code>rel-&gt;pathlist</code> 名录金牌榜里的，就只是一批高度提纯过的、压缩了最恐怖底盘潜力与精血的至高扫描路径结晶战尊们了。它们都在各自摩拳擦掌蓄势待发，只等在随后那波诡云谲连环拼表的 Join 洗礼大战中掀起属于自己的最终腥风血雨！</p>
+<p>经过 <code>add_path</code> 严格的层层淘汰后，<code>RelOptInfo-&gt;pathlist</code> 列表中最终只保存了在各个性能维度下最具竞争力的少数几条扫描路径，这大大提升了优化器在后续关联查询排布阶段的处理效率。</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="多表连接次序与等价类推导-join-ordering--equivalence-classes"><a class="header" href="#多表连接次序与等价类推导-join-ordering--equivalence-classes">多表连接次序与等价类推导 (Join Ordering &amp; Equivalence Classes)</a></h1>
-<p>当查询从单表跃升为多表连接（Multiple Joins）时，优化器迎来了它最耗算力的终极考验：<strong>决定表的连接顺序（Join Order）以及连接方式（Join Methods）</strong>。</p>
-<p>在理论中，N个表的联接顺序组合数呈阶乘爆炸。为了寻找最优解，只要参与联接的表数量低于预设的 <code>geqo_threshold</code> 阈值（默认 12），<strong>规划器就会坚定地踏入自底向上的动态规划（Bottom-up Dynamic Programming）深水区</strong>。</p>
-<p>本章节紧扣 PG 18.1 在 <code>src/backend/optimizer/path/joinpath.c</code>、<code>joinrels.c</code> 乃至 <code>equivclass.c</code> 的源码，深度剖析动态规划建树过程。</p>
+<p>当查询从单表查询跃升为多表连接（Multiple Joins）时，优化器将面临最为计算密集型的任务：<strong>确定最优的表连接顺序（Join Order）以及连接方式（Join Methods）</strong>。</p>
+<p>在理论上，N 张表的连接顺序组合数量随着 N 呈指数级增长。为了在合理的时间内寻找最优解，只要参与连接的基表数量低于预设的阈值（<code>geqo_threshold</code>，默认值为 12），<strong>规划器就会使用自底向上的动态规划（Bottom-up Dynamic Programming）算法</strong>。</p>
+<p>本章结合 PostgreSQL 18.1 在 <code>src/backend/optimizer/path/joinpath.c</code>、<code>joinrels.c</code> 和 <code>equivclass.c</code> 中的源码，剖析多表连接时的底层优化决策。</p>
 <hr>
-<h2 id="1-动态规划底盘致敬-system-r"><a class="header" href="#1-动态规划底盘致敬-system-r">1. 动态规划底盘：致敬 System R</a></h2>
-<p>PostgreSQL 骨子里流淌着 IBM System R 奠定的经典动态规划（DP）搜索思维。</p>
-<h3 id="11-从单打独斗到万物互联"><a class="header" href="#11-从单打独斗到万物互联">1.1 从单打独斗到万物互联</a></h3>
-<p>动态规划秉持最优子结构思想：求 N 张表合并的最优解，就从底部的任意 2 个表搭伙算起，再算 3 张的……以此类推。负责发号施令的主函数为 <strong><code>make_rel_from_joinlist</code></strong>。</p>
-<p>算法调用 <strong><code>standard_join_search</code></strong> 进入标准的 DP 轮回：</p>
+<h2 id="1-动态规划基础"><a class="header" href="#1-动态规划基础">1. 动态规划基础</a></h2>
+<p>PostgreSQL 的多表连接优化使用了经典的关系代数优化策略——动态规划搜索。</p>
+<h3 id="11-从单表到连接结果集"><a class="header" href="#11-从单表到连接结果集">1.1 从单表到连接结果集</a></h3>
+<p>动态规划采用构建最优子结构的策略：要找出 N 张表的最优连接顺序，首先计算任意 2 表连接的最优路径，接着基于这些 2手表的结果集计算 3手表的最优连接，以此类推。这一过程的核心调度函数为 <strong><code>make_rel_from_joinlist</code></strong>。</p>
+<p>算法主要调用 <strong><code>standard_join_search</code></strong> 函数来实现 DP 流程：</p>
 <ul>
-<li><strong>第一层 (Level 1)</strong>：单表路径（来自 <code>set_base_rel_pathlists</code> 的成果）业已就绪，被投入到 <code>join_rel_level[1]</code>。</li>
-<li><strong>状态跃迁 (Level 2~N)</strong>：外围庞大的循环从 <code>Level = 2</code> 开始爬坡。每一层的新组合都由之前计算出的最优子集拼合而来，执行核心递归计算枢纽是 <strong><code>join_search_one_level</code></strong>。</li>
+<li><strong>第一层 (Level 1)</strong>：处理单表访问路径（由 <code>set_base_rel_pathlists</code> 阶段生成完成）。</li>
+<li><strong>多层状态合并 (Level 2~N)</strong>：外层系统从 2 张表组合开始迭代。在每一层的循环中，新的组合都是由前置层的最优子集经过组合而来，这一任务核心依赖 <strong><code>join_search_one_level</code></strong> 递归枢纽进行计算。</li>
 </ul>
-<h3 id="12-left-deep-与-bushy-tree"><a class="header" href="#12-left-deep-与-bushy-tree">1.2 Left-deep 与 Bushy Tree</a></h3>
-<p>在连接树的探索过程中，有两种典型的生长结构：</p>
+<h3 id="12-左深树与灌木丛树"><a class="header" href="#12-左深树与灌木丛树">1.2 左深树与灌木丛树</a></h3>
+<p>在连接树形状的探索中，典型的树状结构主要为两种：</p>
 <ul>
-<li><strong>左深树 (Left-deep Tree)</strong>：老连接结果集直接和单个新基表去拼凑。这种操作占用的内存上下文极少，非常契合 NestLoop 带 Index Scan 这种流式循环。</li>
-<li><strong>灌木丛树 (Bushy Tree)</strong>：允许两个中途拼出的临时大合集互相合并。当复杂查询两侧同时具备高过滤性时，它能打出断代级别的性能优势。</li>
+<li><strong>左深树 (Left-deep Tree)</strong>：之前的连接结果集（作为左侧表）直接与单个新的基表进行合并连接。由于其中一方通常是单表，这种结构极大地降低了执行器在运行时内存上下文的开销，非常契合嵌套循环带索引扫描（NestLoop + Index Scan）的流式执行模式。</li>
+<li><strong>灌木丛树 (Bushy Tree)</strong>：支持两个作为临时中间结果集的复合关系之间进行连接合并。这种结构在面对两份结果集均具备较高过滤性时，能够带来卓越的连接性能提升。</li>
 </ul>
-<p>相比古典引擎死守左深树，PG 在 <code>join_search_one_level</code> 推进下不仅包容左深树路线，更敢于让老手互拼去探索狂放的 Bushy 魔树空间！</p>
+<p>在现代的 <code>join_search_one_level</code> 遍历下，除支持传统的左深树枚举以外，也增加了探索 Bushy 树可能性的选项，这为寻优阶段提供了更大的解空间。</p>
 <hr>
-<h2 id="2-推理大师的逆袭等价类-equivalence-classes-ec"><a class="header" href="#2-推理大师的逆袭等价类-equivalence-classes-ec">2. 推理大师的逆袭：等价类 (Equivalence Classes, EC)</a></h2>
-<p>在放飞动态规划之前，绝对绕不开一张最强底牌：位于 <code>src/backend/optimizer/path/equivclass.c</code> 的等价推理机制。</p>
-<h3 id="21-隐式约束的高维度拦截"><a class="header" href="#21-隐式约束的高维度拦截">2.1 隐式约束的高维度拦截</a></h3>
-<p>如果有句 SQL 写着 <code>WHERE A.id = B.id AND B.id = C.id AND A.id = 5</code>。传统引擎往往忘了通知还没见面的 B 和 C！
-但 PG 凭借等价类结界 <code>EquivalenceClass</code> 实体桶，直接将 <code>{A.id, B.id, C.id, 5}</code> 当成同一根绳上的蚂蚱死死绑定。</p>
-<p>随后祭出 <strong><code>generate_implied_equalities</code></strong> 神技：不管优化器当下在哪个角落想要扫描底层的 <code>B</code> 或者 <code>C</code>，它都会下意识查老底。一看 EC 里存在常量 <code>5</code>，立马如获至宝地凭空变出 <code>B.id = 5</code> 和 <code>C.id = 5</code> 的前置隐式拦截指令。
-这就赶在多表庞大合并引发雪崩之前，通过直接调用单表的 Index Scan，硬生生把上亿行的烂摊子秒杀在前线阵地上。</p>
+<h2 id="2-等价类-equivalence-classes-ec-推导"><a class="header" href="#2-等价类-equivalence-classes-ec-推导">2. 等价类 (Equivalence Classes, EC) 推导</a></h2>
+<p>在启动全面的动态规划之前，优化器必须处理存在于系统查询中的多重等值约束条件，其逻辑实现在 <code>src/backend/optimizer/path/equivclass.c</code> 中。</p>
+<h3 id="21-隐式约束下推"><a class="header" href="#21-隐式约束下推">2.1 隐式约束下推</a></h3>
+<p>在复杂的 SQL 语句中，类似 <code>WHERE A.id = B.id AND B.id = C.id AND A.id = 5</code> 的级联关联条件非常普遍。
+借助等价类机制（<code>EquivalenceClass</code> 实体），PostgreSQL 将这些互相关联的过滤要求整合在一起，将 <code>{A.id, B.id, C.id, 5}</code> 识别为同一组变量集合。</p>
+<p>随后调用 <strong><code>generate_implied_equalities</code></strong> 时：系统自动推断并衍生出隐含的条件约束，比如向未明确说明的 B 和 C 生成 <code>B.id = 5</code> 及 <code>C.id = 5</code> 的精确相等限制约束。
+这类隐含条件的下推操作能够让在底层独立扫描对应的表时直接走索引读取或对查询结果进行强力剪裁，大大避免了连接上亿规模数据前无效联接的资源消耗。</p>
 <hr>
-<h2 id="3-点兵列阵的终极派活populate_joinrel_with_paths"><a class="header" href="#3-点兵列阵的终极派活populate_joinrel_with_paths">3. 点兵列阵的终极派活：<code>populate_joinrel_with_paths</code></a></h2>
-<p>当 DP 决定拿 RelA 和 RelB 拼作一个大联盟（Rel A+B）后，它会将打磨三大物理连接方式的脏活苦活悉数推给 <code>populate_joinrel_with_paths()</code> 熔炉函数。</p>
-<h3 id="31-狂野盲连与死磕nestloop--hashjoin"><a class="header" href="#31-狂野盲连与死磕nestloop--hashjoin">3.1 狂野盲连与死磕：NestLoop / HashJoin</a></h3>
-<p>该函数一上来大喊 <code>match_unsorted_outer</code>，测试原生态无序对抗：</p>
+<h2 id="3-连接路径节点生成populate_joinrel_with_paths"><a class="header" href="#3-连接路径节点生成populate_joinrel_with_paths">3. 连接路径节点生成：<code>populate_joinrel_with_paths</code></a></h2>
+<p>当动态规划选定要将两个表集合合并成一个新的组合结果后，系统会将探索物理连接方式的工作分配给 <code>populate_joinrel_with_paths()</code> 函数生成相应的路径。</p>
+<h3 id="31-嵌套循环与-hash-join-探测"><a class="header" href="#31-嵌套循环与-hash-join-探测">3.1 嵌套循环与 Hash Join 探测</a></h3>
+<p>函数首先调用 <code>match_unsorted_outer</code>，不考虑输入侧表顺序，尝试生成以下基础连接形式：</p>
 <ul>
-<li><strong>NestLoop Join</strong>：如果此时手头带有参数化借力武器（Parameterized Paths），外表便可将循环的每行值作为狙击参数下发给内表，从而使得内表直接唤醒沉睡中的索引发挥神效，绝境逢生翻盘！</li>
-<li><strong>Hash Join</strong>：要是碰到了等值交换，并且算盘先生评估内表塞进内存哈希桶（Hash Bucket）的开销尚能忍受，这就成了大批流灌数据相互撕咬最高效的无序神兵。</li>
+<li><strong>NestLoop Join (嵌套循环连接)</strong>：若系统具有可用的参数化路径（Parameterized Paths），外部表的结果即可依次充当向内层下发的参数以命中内表索引。这种带索引的嵌套循环尤其在其中一方表非常小，且被命名的列存在对应下层优化时效率很高。</li>
+<li><strong>Hash Join (哈希连接)</strong>：面对需要处理等值条件的大规模关联匹配，如果经内部规模检查内层表被预估可以顺利在内存的哈希分配桶（Hash Bucket）中载下，那么 Hash Join 即作为高效无序吞吐的基础连接方式呈现出强大的效能。</li>
 </ul>
-<h3 id="32-讲究排场的序列merge-join"><a class="header" href="#32-讲究排场的序列merge-join">3.2 讲究排场的序列：Merge Join</a></h3>
-<p>随后的 <code>sort_inner_and_outer</code> 则要高雅得多。
-Merge Join 极度依赖双方自带的序列。它如饥似渴地扒着双边结果集的 <code>pathkeys</code>（输出特征），看看它们原生的排序是否对上眼了联接条件。如果恰好都有命合，这招的发起成本便是一路雪崩跌到谷底；如果不巧没有，哪怕硬着头皮加上高昂内存 <code>Sort</code> 花费，PG 也会把它送上决策席比对。</p>
-<h3 id="33-materialize-的缓存魔法"><a class="header" href="#33-materialize-的缓存魔法">3.3 Materialize 的缓存魔法</a></h3>
-<p>如果在多层 Nestloop 内部嵌套里发现某个内部小圈子被反复频繁读取而累得喘不上气，系统会自动呼唤 <code>create_material_path</code> 在途中加塞一个钉子般的缓存节点，保留救命结果集。</p>
-<p>最终，各显神通的所有招式会被集体塞入无情的 <code>add_path</code> 刽子手门外。它像极其功利的督工一样排查评估谁跑得快谁带的好处多，把没用的统统扔进深渊，剩下的真金战神统统稳坐 <code>RelOptInfo-&gt;pathlist</code> 决胜席位。</p>
+<h3 id="32-排序优先归并merge-join"><a class="header" href="#32-排序优先归并merge-join">3.2 排序优先归并：Merge Join</a></h3>
+<p>接下来的逻辑由 <code>sort_inner_and_outer</code> 负责。
+Merge Join (归并连接) 对两侧表输出行的相对顺序高度敏感，它需要通过检索左右两侧流属性上的排序能力信息（<code>pathkeys</code> 特征）是否吻合联接标准。对于天生已具备一致顺序特征的结果流，Merge Join 可以利用极低的算力优势组合两侧；如果双边或单边缺失排序属性，优化器也会预估强加上 <code>Sort</code> 节点来进行全量重新归档的时间成本，加入代价对比系统之中。</p>
+<h3 id="33-缓存中间层materialize"><a class="header" href="#33-缓存中间层materialize">3.3 缓存中间层：Materialize</a></h3>
+<p>在处理高嵌套深度的关系时，若系统的某一处于内层子查询操作因为不带索引等原因被嵌套循环高频率往返检索而造成巨大损失开销时，优化器可自动加入 <code>create_material_path</code> 在途中增设一条具有执行临时落盘内存保护作用的中间缓存（Materialize 节点）集预留路径保障。</p>
+<p>最终，由不同的联合策略所搭建的路线都被发送到 <code>add_path</code> 函数进行效用和总体花销的比对裁决，代价高且无辅助优化的较差选择被抛卸不用，而具备最好收益（最低耗或最具排序保留项优势等）的节点将挂载回最终生成组的 <code>RelOptInfo-&gt;pathlist</code> 的保存战绩单。</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="遗传启发算法-geqo-genetic-query-optimizer"><a class="header" href="#遗传启发算法-geqo-genetic-query-optimizer">遗传启发算法 (GEQO, Genetic Query Optimizer)</a></h1>
-<p>在前一章中，我们深度领略了 PostgreSQL 自底向上的动态规划（Dynamic Programming, DP）算法。这套精密至极的机制，誓要在错综复杂的表网中抠出一条理论上绝对完美的执行路线。</p>
-<p>但这套机制并不是无底洞。即便是启用了启发式剪枝，DP 枚举排列的开销同样也会呈现不可阻挡的指数级大爆炸。倘若你在超大型数仓的复杂视图里牵连了上十几二十张表（超越 <code>geqo_threshold</code> 默认值 12 的警戒线），如果非要强摁着 DP 去穷举到底。那么可能到最后，<strong>光是把“计划算出来”所花死等的时间，就足以超过去硬表硬扫实际跑完总时间的好几百倍！</strong></p>
-<p>这时候，就轮到 <strong>GEQO (Genetic Query Optimizer 遗传式查询优化器)</strong> 挺身而出了。
-它不指望算出绝对最佳组合，但它笃定向你保证，在仅需区区几十毫秒推演里，利用生物演化的力量，就能给你端上来一道**“未必天下第一，但也绝对堪用之上乘”的退求其次解法**。</p>
+<p>在前一章中，我们解释了系统如何借助自底向上的动态规划（Dynamic Programming, DP）来获取理论代价最优的表执行路径顺序。
+然而，随着需要关联表的数目提升，DP 算法对排列组合数的计算时间呈现出指数级别的膨胀。由于在某些涉及许多基表的场景中（当数目超越 <code>geqo_threshold</code> 的设定阈值，默认 12），让引擎仅为了选择连接次序而对巨量组合进行穷举所消耗的时间代价，甚至可能大于数据库引擎直接进行实际访问数据处理的粗暴方案。</p>
+<p>为了解决计算耗时的上限问题，PostgreSQL 引入了 <strong>GEQO (Genetic Query Optimizer 遗传式查询优化器)</strong>。
+它并未强求在有限时间内寻找到最优组合底牌序列，而是运用以模拟生物进化特征规律作为基底的启发式搜索，在短时间内迅速输出一份性能可以满足使用要求、贴合次优组合状态的可执行计算计划。</p>
 <hr>
-<h2 id="1-隐喻对账sql-乱炖化身旅行商难题-tsp"><a class="header" href="#1-隐喻对账sql-乱炖化身旅行商难题-tsp">1. 隐喻对账：SQL 乱炖化身旅行商难题 (TSP)</a></h2>
-<p>遗传演化的关键，就在于如何把问题重新包装成“染色体”结构变种。
-在 GEQO 视角下，多张大表的连接顺序争杀其实就是在重演全球最火爆的 NP 级数学难题——<strong>旅行商问题 (Traveling Salesman Problem, TSP)</strong>。</p>
+<h2 id="1-原理连接排序优化与旅行商问题-tsp"><a class="header" href="#1-原理连接排序优化与旅行商问题-tsp">1. 原理：连接排序优化与旅行商问题 (TSP)</a></h2>
+<p>通过应用算法工程学封装理论，可以将表的连接排序调度映射视为与<strong>旅行商问题 (Traveling Salesman Problem, TSP)</strong> 等效的数据排布解法。</p>
 <ul>
-<li><strong>城池</strong> = 待匹配的基础表（Base Relation）。</li>
-<li><strong>车道 (Tour)</strong> = 表之间连接的先后序列组，例如 $A \to C \to B \to D$。</li>
-<li><strong>盘缠开销 (Path Cost)</strong> = 顺着这条方案往下跑，底层执行器所需的代价（Total Cost）账单。</li>
+<li><strong>城市</strong> = 对等参与需要进行 Join 计算匹配的基础表。</li>
+<li><strong>路径 (Tour)</strong> = 代表实际生成的表之间相连接的串联运算流程先后序列状态。</li>
+<li><strong>距离代价 (Path Cost)</strong> = 基于具体推演生成的排序链中调用底层评价模型所预计生成总代价（Total Cost）。</li>
 </ul>
-<p>在 PG 的源码限定下，GEQO 系统被剥夺了探界繁杂无比的多路 Bushy 树魔阵的野心，只能踏实地在传统的 Left-deep 树（一条道走黑、线性联营序列）这方小天地内推演染色体排谱。</p>
+<p>由于需要规避状态过于冗杂繁复，GEQO 系统受制于限定算法体系规则范畴而在 PostgreSQL 中被固定下来主要支持在左深树结构（Left-deep Tree 线性联接）序列范围内提供染色体组合计算推演，极大地约束了运算探索框架。</p>
 <hr>
-<h2 id="2-geqo-的全局生物演化钟"><a class="header" href="#2-geqo-的全局生物演化钟">2. GEQO 的全局生物演化钟</a></h2>
-<p>这套基因游戏全赖 <code>geqo_main()</code> 发条手拨转。整个轮盘涵盖下面这五段宛若天神造物的创世纪流程：</p>
-<h3 id="21-鸿蒙初辟种群大爆发-initialization"><a class="header" href="#21-鸿蒙初辟种群大爆发-initialization">2.1 鸿蒙初辟：种群大爆发 (Initialization)</a></h3>
-<p>造物之初唤起 <code>random_init_pool()</code>。
-系统直接按掷骰子般的随机序列排列组合法，粗暴地先抓出一把“先头部队”路线放入初始池（Pool）！基表数量 N 越多，这繁衍大池子也会基于特定的公式膨大激增，产生数百只怪胎个体。</p>
-<h3 id="22-阎王判官生存力测算-fitness-evaluation"><a class="header" href="#22-阎王判官生存力测算-fitness-evaluation">2.2 阎王判官：生存力测算 (Fitness Evaluation)</a></h3>
-<p>残酷的试金石主掌在 <code>geqo_eval()</code> 之手。
-对池子里的每一个孤单小串串（比如排序集合 $A, B, C, D$），GEQO 自己压根都懒得推敲。它极其讨巧地跑去<strong>白嫖那个 DP 正规军手头的传统算账代价引擎（Cost Engine）！</strong>
-它硬逼着别人把这次序捏成完工的 Join Tree，塞给 <code>cost_qual_eval</code> 底座让它死命算。算完拿到一个生冷的代价值，倒转印刻为自己在这个大池里能不能存活的资本——<strong>适应度 (Fitness)</strong>。</p>
-<p>而后它大手一挥，无情调用 <code>gimme_pool_size()</code> 将这一水箱的所有人马依据分数<strong>排高低搞大榜单 (Ranking)</strong>。占据榜单制高点那几个就是战力最猛的，在底端垫底的随时面临斩草除根之命。</p>
-<h3 id="23-天选提拔-selection"><a class="header" href="#23-天选提拔-selection">2.3 天选提拔 (Selection)</a></h3>
-<p>基因界里越是彪悍，那必定得狂撒种子。为了不彻底垄断，它用上了坐落于 <code>geqo_selection.c</code> 大殿里的 <strong>基于排名的线性择优术 (Linear Ranking Selection)</strong>。
-排名极其靠前的（消耗越少的）个体，其作为准双亲被钦点繁衍大业的基率极高；不过即便你是底端垫底的，依旧存留微小的配种率以防止大池基因僵死。</p>
-<h3 id="24-最核弹魔力交叉互融-crossover--erx"><a class="header" href="#24-最核弹魔力交叉互融-crossover--erx">2.4 最核弹魔力交叉互融 (Crossover / ERX)</a></h3>
-<p>PG 在远古大作 <code>geqo_erx.c</code> 选定了一个最高绝阵法：<strong>边缘重组交叉算子 (Edge Recombination Crossover, ERX)</strong>。
-这玄学法术能够极其贪心保留了那一代代遗传下来的“连襟死党邻座对”。比如当爹的那里有 <code>A-&gt;C</code>，当娘的恰好也有 <code>C-&gt;A</code>！说明这对死基友有着天生优良联系。到了小下一代，子程序就会疯狂向这些游离周边基因靠拢，死死保留住新子代的绝强捆绑落段。完美吻合联接树“相邻结合最好”的物理特征。</p>
-<h3 id="25-为了不死循环的叛逆突变-mutation"><a class="header" href="#25-为了不死循环的叛逆突变-mutation">2.5 为了不死循环的叛逆突变 (Mutation)</a></h3>
-<p>要是成百代的人只死盯交配繁衍不加变化，全群早晚会在一个名为 <strong>局域极值耗死 (Local Minima)</strong> 的巨坑里憋死（大家长得一模一样，再也配不出更佳的优形种）。
-在此 <code>geqo_mutation()</code> 给每个新下的瓜注入疯血乱性小药剂。通过扔极个别的乱骰数，强行将新生一代里的第三和第五位成员硬做一次对调置换叛乱，强行注入野生新息，推拉进化车轮脱离局限烂泥。</p>
+<h2 id="2-geqo-的系统演化流程机制"><a class="header" href="#2-geqo-的系统演化流程机制">2. GEQO 的系统演化流程机制</a></h2>
+<p>整体处理入口主要通过 <code>geqo_main()</code> 来驱动。按照算法阶段分布可解构包含下面这五个维度的运作模式：</p>
+<h3 id="21-种群初始化-initialization"><a class="header" href="#21-种群初始化-initialization">2.1 种群初始化 (Initialization)</a></h3>
+<p>在运算初期调用 <code>random_init_pool()</code> 函数构建。
+根据基表的参与基数运算预定大盘大小情况，通过随机生成部分线性状态联接节点连接序组合构建形成了若干“祖先个体序列”载入初始种群池（Pool）以拉开推演。</p>
+<h3 id="22-适应度测算-fitness-evaluation"><a class="header" href="#22-适应度测算-fitness-evaluation">2.2 适应度测算 (Fitness Evaluation)</a></h3>
+<p>对新生成的每一个序列路线，必须进行可用性的衡量定级，交予在 <code>geqo_eval()</code> 中运算落实。
+GEQO 系统不额外造一套执行度量框架，而是选择委托向动态规划 (DP) 使用过的既有的核心评价基调引擎模块，强制以自身次序为输入利用 <code>cost_qual_eval</code> 核算最终完工的 Join Tree 总代价值作为该个体在此池内的生存底盘——即适应度 (Fitness) 给定评价。
+最终经统一整理借由 <code>gimme_pool_size()</code> 将成员对象根据适应分数排序重组制定名次列表 (Ranking)，优等排位成员具备被抽取权衡更强势竞争基调。</p>
+<h3 id="23-选取保留-selection"><a class="header" href="#23-选取保留-selection">2.3 选取保留 (Selection)</a></h3>
+<p>系统根据成员等级利用 <code>geqo_selection.c</code> 所持的 <strong>线性排位选取策略 (Linear Ranking Selection)</strong> 来抽选可以进入接下来繁殖过程繁衍迭代运算的基元。
+该逻辑允许对排名最顶部消耗代价值较少的高端优胜种子给予更高优先级别的参与继承繁殖选中机遇，而并不完全直接淘汰排底成员以防系统过度提前卡死于有限相似选择（保证基因延续活态环境）。</p>
+<h3 id="24-互斥与结合运算交叉重组-crossover--erx"><a class="header" href="#24-互斥与结合运算交叉重组-crossover--erx">2.4 互斥与结合运算：交叉重组 (Crossover / ERX)</a></h3>
+<p>这是针对下一代特征选出最有效的提取途径模块。调用 <code>geqo_erx.c</code> 实现应用较成熟阵列法：<strong>边缘重组交叉算子 (Edge Recombination Crossover, ERX)</strong> 技术体系。
+为了最大限度使关联表中已经证明了是效率较高执行关系相邻属性得以保存下沉。算法利用统计前后子嗣双成员父母方状态的特定组合关联存在率来约束子代的连结点靠拢概率取定。以此使得对关联操作最佳效果表态关系得以最大限度通过算法规则强制遗传留存到了新生代的组链之中去。</p>
+<h3 id="25-避免极化随机突变-mutation"><a class="header" href="#25-避免极化随机突变-mutation">2.5 避免极化：随机突变 (Mutation)</a></h3>
+<p>受生物规律制约若连续运算而毫无外界异化插入则将最终令系统池被趋同方案极具固化形成名为 <strong>局部位段低谷滞定 (Local Minima)</strong> 的瓶颈现象。
+通过 <code>geqo_mutation()</code> 组件，对少数特定生成的重组代种成员节点刻对其中位阶第三节点以第五节点发生强行的数据颠倒乱序强制推衍变换突改扰乱。通过给入差异态变体解结构破突该原僵局使整体探索圈拓展脱离旧框架极化困境泥带。</p>
 <hr>
-<h2 id="3-玄学终局的苦果因果命数"><a class="header" href="#3-玄学终局的苦果因果命数">3. 玄学终局的苦果：因果命数</a></h2>
-<p>当历经了 <code>geqo_effort</code> 参数控制指令下的足足成百代疯狂更迭发酵之后，主神降临强硬鸣金喊停。淘沙剩下来的最终池子里，傲然屹立爬到全团顶尖排位座次第零位的最彪悍极品，会被如神选般抽将出来。
-规划器：“天命难违，弟兄们下海吧，我们就干这票 Join 图形了！”</p>
-<h3 id="被副作用反噬让人心脏骤停的善变计划"><a class="header" href="#被副作用反噬让人心脏骤停的善变计划">被副作用反噬：让人心脏骤停的善变计划</a></h3>
-<p>要是你真的在十来张超巨大核心表里放肆享受了大杂烩拉联操作，你势必迎来一场灵异戏剧：
-既然这套遗传玄学打从始至终就带有极大运气伪随机脾性，这不就代表着即便是同样一模一样的惊天 SQL。早上拿出的跑位路线，和下午拿出来的最终底盘执行解析解释图表（Explain Plan），<strong>两者竟然很有可能是长得鸡飞狗跳、完全大相径庭的两棵截然不同狂树！</strong> 查询响应时间会出现长短不一的玄学心跳图。</p>
-<p>你要是深受这玄学波动困扰，想要绝对稳定执行期这稳坐钓鱼台的话：</p>
+<h2 id="3-geqo-运用的影响及约束条件"><a class="header" href="#3-geqo-运用的影响及约束条件">3. GEQO 运用的影响及约束条件</a></h2>
+<p>经过基于 <code>geqo_effort</code> 参数限定控制预留循环量而演化后系统将由外部收拢命令。剩余选池列表中具有排名最高适度表现个体所指定的路由模型成为此波推演获利采用解下传优化阶段交表。
+基于 TSP 演变寻找推论特性使得计划选择将由此面对以下的随机性系统性特性情况：</p>
+<h3 id="不稳定特异点及其处理"><a class="header" href="#不稳定特异点及其处理">不稳定特异点及其处理</a></h3>
+<p>对于参与数跨度极其庞杂连接视图使用本算法推算出来的最佳次优选项路径带有本质上的部分非绝对唯一规律特性，即对同类环境条件下再次向核心抛出的特定极繁 SQL 所生成得出的解释剖析结构及预期执行结果执行路途方案 Explain Plan（尤其是各个表的介入组合位情况）存在偶发变化可能，查询时长也会轻微动摇。
+在工程生产排障如需杜绝对该类型现象可以考量介入如下干预：</p>
 <ol>
-<li>请干脆把该连的 <code>geqo_seed</code> (所谓的演变乱斗随机种子主值) 定死为一个你熟悉永远不动的固化常数值去打保底复现重演锁定死。</li>
-<li>要是你有着多的大运存时间也不计较前期图纸计算耗时，干脆强杀 <code>SET geqo = off</code> 去锁死其运作，也就是放极大化那个 <code>geqo_threshold</code> 去活活让老底儿动态计算老黄牛去强推平所有的动态阵列！</li>
+<li>锁定执行状态可以通过向 <code>geqo_seed</code> 自定义下放指派某个确认复用不变的数字型种子以固化整体运算环境对同一运算方案提供相对可复述锁闭推测。</li>
+<li>牺牲评估阶段长解析消耗换回运算结构死算保底：针对可耐高限查询可以直接运用 <code>SET geqo = off</code> 去指令规划放弃算法随机匹配跳步或者将其限压使用配置如放大 <code>geqo_threshold</code> 开关，使得庞杂基群硬向以动态排列框架去硬铺强行执行枚举保证运算计划唯一性。</li>
 </ol>
 <div style="break-before: page; page-break-before: always;"></div>
-<h1 id="后置优化与物理算子拼接-post-optimization--upper-planner"><a class="header" href="#后置优化与物理算子拼接-post-optimization--upper-planner">后置优化与物理算子拼接 (Post-Optimization &amp; Upper Planner)</a></h1>
-<p>如果说查询规划的“上半场”（代码里叫 Lower Planner，即底层的 Join 树构建）解决的是“去哪找数据、按什么顺序拼最快”的问题，那么规划机制的“下半场”——<strong>Upper Planner (高层优化器)</strong>，解决的则是“拼完了数据怎么满足用户最终的语义控制”的问题。</p>
-<p>当 <code>FROM</code> 和 <code>WHERE</code> 连接网络被 <code>query_planner</code> 函数结算为一颗拥有最优代价值的 <code>RelOptInfo</code> 返回时，优化器会回到其广袤的母调度函数：<strong><code>grouping_planner</code></strong>（位于 <code>src/backend/optimizer/plan/planner.c</code>）。</p>
-<p>在 <code>grouping_planner</code> 中，系统会为这棵刚刚建成的基底数据树逐层裹上“包装”，处理包括但不限于：<code>GROUP BY</code> (聚合), <code>WINDOW FUNC</code> (窗口函数), <code>ORDER BY</code> (排序), <code>DISTINCT</code> (去重) 以及 <code>LIMIT/OFFSET</code> (截断) 等高级操作。</p>
-<p>结合 PostgreSQL 18.1 的最新代码，我们将深入这条“物理算子包装流水线”。</p>
+<h1 id="后置优化与高层算子拼接-post-optimization--upper-planner"><a class="header" href="#后置优化与高层算子拼接-post-optimization--upper-planner">后置优化与高层算子拼接 (Post-Optimization &amp; Upper Planner)</a></h1>
+<p>如果说查询规划的底盘（即底层扫描与表连接路径生成）负责解决数据访问的效率和顺序问题，那么高层优化器（Upper Planner）的任务则是将这些基础数据组装为符合查询语义中关于分组、排序及去重等高级特性要求的结果形式。</p>
+<p>当 <code>FROM</code> 和 <code>WHERE</code> 构建出的表连接网络被 <code>query_planner</code> 评估并返回具有最优代价的 <code>RelOptInfo</code> 后，规划过程会返回主调度函数：<strong><code>grouping_planner</code></strong>（定义在 <code>src/backend/optimizer/plan/planner.c</code> 中）。</p>
+<p>在 <code>grouping_planner</code> 阶段，优化器会根据 SQL 语法树的要求，逐级向执行计划树添加 <code>GROUP BY</code> (聚合), <code>WINDOW FUNC</code> (窗口函数), <code>ORDER BY</code> (排序), <code>DISTINCT</code> (去重) 以及 <code>LIMIT/OFFSET</code> (截断) 等高级逻辑算子。</p>
+<p>本章结合 PostgreSQL 18.1 代码介绍这些高阶算子的生成过程。</p>
 <hr>
-<h2 id="1-入口统筹upper-rel-与-grouping_planner"><a class="header" href="#1-入口统筹upper-rel-与-grouping_planner">1. 入口统筹：Upper Rel 与 <code>grouping_planner</code></a></h2>
-<p>与底层基表或连接不同，PG 抽象出了一种名为 <strong>Upper Rel (上层关系)</strong> 的 <code>RelOptInfo</code>，通过 <code>UPPERREL_GROUP_AGG</code>、<code>UPPERREL_WINDOW</code> 等专有分级不断往顶层堆叠。</p>
-<p>在 <code>grouping_planner</code> 中，标准的装配链是极其严苛有序的。每装配完一层，就会生成一个涵盖了前面所有计算结果的新 <code>RelOptInfo</code>：</p>
+<h2 id="1-高层关系upper-rel-与-grouping_planner"><a class="header" href="#1-高层关系upper-rel-与-grouping_planner">1. 高层关系：Upper Rel 与 <code>grouping_planner</code></a></h2>
+<p>与底层基表 (Base Rel) 或表连接节点不同，PostgreSQL 为了处理高层逻辑，将节点抽象出了 <strong>Upper Rel (上层关系)</strong> 的 <code>RelOptInfo</code> 表示，通过 <code>UPPERREL_GROUP_AGG</code>、<code>UPPERREL_WINDOW</code> 等状态常量对这些过程进行分层处理。</p>
+<p>在 <code>grouping_planner</code> 中，节点装配遵循严格的顺序。每处理完一层的特征限定，就会包装并生成一个包含了之前阶段计算结果的全新 <code>RelOptInfo</code> 节点：</p>
 <ol>
-<li>底层扫描与联接 (<code>query_planner</code> 完成)。</li>
-<li>（如有）追加分组与聚合 <code>UPPERREL_GROUP_AGG</code>。</li>
-<li>（如有）追加窗口函数计算 <code>UPPERREL_WINDOW</code>。</li>
-<li>（如有）追加 <code>SELECT DISTINCT</code> 去重。</li>
-<li>（如有）追加 <code>ORDER BY</code> 排序 <code>UPPERREL_ORDERD</code>。</li>
-<li>（如有）追加 <code>LIMIT / OFFSET</code> 截断。</li>
+<li>底层扫描与联接 (<code>query_planner</code> 返回的基础结果)。</li>
+<li>若存在聚合操作，生成分组与聚合信息 <code>UPPERREL_GROUP_AGG</code>。</li>
+<li>若存在窗口函数，追加窗口状态计算 <code>UPPERREL_WINDOW</code>。</li>
+<li>若存在 <code>SELECT DISTINCT</code>，附加去重算子处理。</li>
+<li>若请求排序，追加 <code>ORDER BY</code> 处理层 <code>UPPERREL_ORDERD</code>。</li>
+<li>最后若存在数据范围要求，追加 <code>LIMIT / OFFSET</code> 计算特征层。</li>
 </ol>
-<p>下面重点剖析这套外置神兵利器的核心模块。</p>
+<p>以下我们对若干核心模块进行剖析。</p>
 <hr>
-<h2 id="2-聚集规划-aggregation--grouping"><a class="header" href="#2-聚集规划-aggregation--grouping">2. 聚集规划 (Aggregation &amp; Grouping)</a></h2>
-<p>在面对包含聚合函数（<code>SUM()</code>, <code>AVG()</code>）或声明了 <code>GROUP BY</code> 的查询时，系统会跳入 <code>create_ordinary_grouping_paths()</code> 去生成聚合方案。</p>
-<p>PG 支持三种硬核的物理聚合算子：</p>
+<h2 id="2-聚集计算的规划-aggregation--grouping"><a class="header" href="#2-聚集计算的规划-aggregation--grouping">2. 聚集计算的规划 (Aggregation &amp; Grouping)</a></h2>
+<p>对于包含聚合函数（如 <code>SUM()</code>, <code>AVG()</code>）或使用 <code>GROUP BY</code> 的查询，系统会进入 <code>create_ordinary_grouping_paths()</code> 过程去建立相应的处理路径组合。</p>
+<p>PostgreSQL 引擎在实现聚合计算时，主要包含以下三种执行机制算子：</p>
 <h3 id="21-基础聚合-plain-aggregate"><a class="header" href="#21-基础聚合-plain-aggregate">2.1 基础聚合 (Plain Aggregate)</a></h3>
-<p>应对的是诸如 <code>SELECT count(*) FROM table</code>，没有 <code>GROUP BY</code> 的查询。
-系统只需在顶端挂载一个单行的聚集器。输入流来了之后，它只会在内存中累加内部状态值，流结束后输出唯一的一条合并行记录。启动代价小，逻辑极其精简。</p>
+<p>此类算子针对 <code>SELECT count(*) FROM table</code> 等整体聚合操作（不带 <code>GROUP BY</code>）。
+节点实现较为简单：输入数据并维护记录计数及运算值，全流遍历结束后返回唯一单行记录。算子启动成本极低。</p>
 <h3 id="22-排序归并聚合-groupaggregate--sorted-aggregation"><a class="header" href="#22-排序归并聚合-groupaggregate--sorted-aggregation">2.2 排序归并聚合 (GroupAggregate / Sorted Aggregation)</a></h3>
-<p>要求输入的数据流<strong>必须已经按照 <code>GROUP BY</code> 列排好序</strong>。</p>
+<p>对输入数据拥有要求，输入流<strong>必须满足按 <code>GROUP BY</code> 列特征进行了排序</strong>。</p>
 <ul>
-<li><strong>机制</strong>：类似于流式游标。当读入的值和上一条的值在 Group 键上一样时，累加聚合状态；一旦读到新的值（越界），立即抛出刚刚结算完的那个聚合组结果，并重置计数器重新开始。</li>
-<li><strong>优缺点</strong>：内存占用极致省钱。但代价是：如果你底层吐出来的数据压根没有顺序（比如 HashJoin 出来的），GroupAggregate 就会惨叫着要求在底下先强压一个昂贵的 <code>Sort Node</code>（排序算子）。</li>
+<li><strong>计算原理</strong>：类似于扫描与状态累加。处理中不断对比上一输入值是否变化，若同一组合属性的值相等即进行状态统计；当发现键值更新后，结算上一聚合组进行数据输出。</li>
+<li><strong>代价考量</strong>：在执行期间占用少量运存，性能好。然而，若底层所提供的路径不包含匹配的属性排序（例如采用基于 HashJoin 产生的无序结果集），那么优化器必须硬性估算加入 <code>Sort Node</code> 重装排序的时间与算力代价。</li>
 </ul>
-<h3 id="23-哈希聚合与落盘-hashaggregate--disk-spill"><a class="header" href="#23-哈希聚合与落盘-hashaggregate--disk-spill">2.3 哈希聚合与落盘 (HashAggregate &amp; Disk Spill)</a></h3>
-<p>不需要预先排序。</p>
+<h3 id="23-哈希聚合计算-hashaggregate--disk-spill"><a class="header" href="#23-哈希聚合计算-hashaggregate--disk-spill">2.3 哈希聚合计算 (HashAggregate &amp; Disk Spill)</a></h3>
+<p>此类算子不预先要求数据集的排列状态。</p>
 <ul>
-<li><strong>机制</strong>：上来就在内存（<code>work_mem</code>）里修筑一个庞大的 Hash Table。扫入的数据通过计算 Hash 值强行扔入不同的 Bucket 并累加状态。扫完全表后，再将结果一口气倾倒出栈。</li>
-<li><strong>重大进化</strong>：在 PG 13 之后加入了 <strong>HashAgg Disk Spill (落盘机制)</strong>。这意味着一旦发现分组数量超过内存，它不会简单粗暴抛弃哈希聚合，而是会引入多批次落盘合并的额外磁盘惩罚，极大地增强了稳定性。</li>
+<li><strong>机制方案</strong>：节点利用内存变量（受 <code>work_mem</code> 上限约束）建立哈希查找表关联。读取流式数据将其打入对应的 Hash 值桶（Bucket）内实时记录，遍历完成后批量输出对应组状态。</li>
+<li><strong>落盘保护机制升级</strong>：自 PG 13 起加入了 <strong>HashAgg Disk Spill (落盘溢出存储功能)</strong>。如果判定分组容量或者数量庞大，可能造成内存限制超限被触发，它能额外调派多批次的写入缓存溢出到外部磁盘做临时暂存记录处理以提高聚合稳定性。</li>
 </ul>
 <hr>
-<h2 id="3-窗口函数-window-functions"><a class="header" href="#3-窗口函数-window-functions">3. 窗口函数 (Window Functions)</a></h2>
-<p>在聚合之后，就是窗口函数的战场 <code>UPPERREL_WINDOW</code>（位于 <code>planner.c: create_window_paths</code>）。</p>
-<p>当你用到了 <code>SUM(x) OVER (PARTITION BY a ORDER BY b)</code> 这种强大的跨窗函数时，必须明白：</p>
+<h2 id="3-处理窗口函数-window-functions"><a class="header" href="#3-处理窗口函数-window-functions">3. 处理窗口函数 (Window Functions)</a></h2>
+<p>聚合操作后如必要，将处理 <code>UPPERREL_WINDOW</code>（源码可见：<code>planner.c: create_window_paths</code>）。</p>
+<p>在遇到如 <code>SUM(x) OVER (PARTITION BY a ORDER BY b)</code> 语法时：</p>
 <ol>
-<li>窗口函数实质上是一种变种的 GroupAgg，它<strong>极端渴求</strong>输入序列必须按 <code>a</code> 和 <code>b</code> 严格有序。</li>
-<li><strong>多窗口合并优化</strong>：如果一个 SQL 里有五六个窗口函数，有的 <code>PARTITION BY a ORDER BY b</code>，有的则是 <code>PARTITION BY c</code>，PG 会在 <code>group_window_funcs</code> 操作里尝试把 <code>OVER</code> 子句诉求完全一致的合并在一次节点轮询里执行掉。不同规则的必须被切割成独立栈。</li>
-<li>优化器会重新评估底下这堆由聚合输出的路。假如下面的路正好自带按顺排好的 <code>pathkeys</code>，那就省去了二次排序。如果没有？那就硬着头皮加上显式的 Sort Node。</li>
+<li>窗口函数可以看做带扩展作用域的定制版排序集合需求，其算子<strong>必需输入记录拥有满足对应要求的排序状态。</strong> 即数据必须按照 <code>PARTITION</code> 及 <code>ORDER</code> 相印符合。</li>
+<li><strong>同窗口合并处理</strong>：优化器会在 <code>group_window_funcs</code> 流程排查。若当前同一查询结构内涵盖多个具有同样的 <code>OVER(PARTITION BY... ORDER BY...)</code> 窗函数结构要求，这使得它们可以在统一序列状态下的单个物理窗口运算算子循环完成处理；差异条件的则隔离进行对应次序执行分配。</li>
+<li>系统考察传入底本是否自带契合所需求的底层输出序列特征（<code>pathkeys</code> 包含情况），对未对口的自动附加明确指定的 <code>Sort Node</code> 作为强保障节点约束。</li>
 </ol>
 <hr>
-<h2 id="4-排序神器增量排序-incremental-sort"><a class="header" href="#4-排序神器增量排序-incremental-sort">4. 排序神器：增量排序 (Incremental Sort)</a></h2>
-<p>这是近期 PostgreSQL 带来的真正惊艳业界的一大特性。
-所有的排序需求都要通过 <code>create_ordered_paths</code> 往上塞。对于最棘手的 <code>Sort</code> 我们以前只有全表堆排序。</p>
-<p><strong>试想场景</strong>：
-假如你需要 <code>ORDER BY a, b</code>。由于你在 <code>a</code> 上有一个出色的索引，底层 Index Scan 捞上来的数据<strong>已经按 <code>a</code> 排好序了，只是 <code>b</code> 是乱序的</strong>。也就是所谓的“提供了部分前缀排序（Prefix Sorted）”。
-在没有 Incremental Sort 之前，PG 会长叹一声：“反正 <code>pathkeys</code> 对不上 <code>(a,b)</code> 组合，底下的排序全当废纸！全量装进内存强制 Sort！”。</p>
-<p><strong>Incremental Sort 机制</strong>：
-现在，由相关逻辑捕获 <code>Prefix Sorted</code> 特征。优化器能够插入一条轻量级的 <code>Incremental Sort</code> 路径。
-在执行时，只要探测到前一个读取的 <code>a</code> 的值没变，它就把 <code>b</code> 暂时吃进缓存；一旦 <code>a</code> 变了，这就立即针对前面那个小缓存栈里的区区几条数据对 <code>b</code> 进行<strong>极低代价的微型内存 Sort 并输出。</strong> 这个技术直接将长尾查询的延迟削减了数量级。</p>
+<h2 id="4-排序路径增量排序-incremental-sort"><a class="header" href="#4-排序路径增量排序-incremental-sort">4. 排序路径：增量排序 (Incremental Sort)</a></h2>
+<p>排序处理作为系统开销极大的操作类别之一，所有的外部需求进入 <code>create_ordered_paths</code> 整合评估模块生成关联 <code>Sort</code> 结果。
+近年来 PostgreSQL 添加了增量排序（Incremental Sort）这一项具有实际提速效用的执行动作节点。</p>
+<p><strong>解决场景分析</strong>：
+在以往，处理请求 <code>ORDER BY a, b</code> 发现来自执行底图有通过针对 <code>a</code> 构建的索引产生的结果流，此时底层结果“仅按 <code>a</code> 完成了排列”（提供 Prefix Sorted 部分前缀有序效果），但引擎只能判断出 <code>pathkeys</code> 不完全满足要求，转而将全体记录退回做纯粹内存的全体重新重排序工作。</p>
+<p><strong>Incremental Sort 执行逻辑</strong>：
+现有的检测体系会捕获提取 <code>Prefix Sorted</code> 的优势特性。执行期间读取具有一致 <code>a</code> 值的所有关联记录后将那部分同值子片段截取缓存下发交予内部 <code>Incremental Sort</code> 进行非常小的量级微型重排并直接返回送出。极大程度减少大规模一次性阻塞，加快流失输出和减负查询总开销量。</p>
 <hr>
-<h2 id="5-截断-limit--offset-对底层引擎的倒逼"><a class="header" href="#5-截断-limit--offset-对底层引擎的倒逼">5. 截断 (Limit / Offset) 对底层引擎的倒逼</a></h2>
-<p>如果你以为 <code>LIMIT 1</code> 只是最后加一个截断算子，那就大错特错了。
-<code>LIMIT</code> 具备极为强烈的<strong>计划倒置影响力 (Plan Inversion Power)</strong>！它存在于 <code>create_limit_path()</code> 之中。</p>
-<p>当你的整棵查询树带着几十万总代价值，遇到 <code>LIMIT 10</code> 时：
-PG 的代价估算器不仅修改上层代价值，甚至会去翻阅之前在底端遗留的所有未决执行路径。</p>
-<p>之前说过，优化器会保留两条路：<code>cheapest_startup_path</code> (启动极快但总体最慢) 和 <code>cheapest_total_path</code> (启动很慢但总体最快)。
-如果是没有 LIMIT 的提取：<code>Hash Join</code> 由于建哈希表，扫全表 <code>total_cost</code> 极低，必定压倒 <code>NestLoop</code>。
-但在有了 LIMIT 之后：优化器<strong>只需要拿到十行记录</strong>。<code>Hash Join</code> 因为需要先把两张表各自的几百万全缓存下来才能吐出第一行，其 <code>startup_cost</code> 令人发指。而看似非常笨拙的 <code>NestLoop + Index Scan</code> 却能在 0 缓冲的情况下瞬间拿到第一行、第十行的结果并直接终止循环。</p>
-<p>在 <code>LIMIT</code> 的神来之笔下，优化器会给拥有最优 <code>startup_cost</code> 的路径重新打上极高的权重，成功颠覆由总价主导下的 HashJoin 王权，切换到那些极速启动的参数化嵌套循环和纯净索引路径。</p>
+<h2 id="5-翻盘影响截断分析-limit--offset-对路径的反馈机制"><a class="header" href="#5-翻盘影响截断分析-limit--offset-对路径的反馈机制">5. 翻盘影响：截断分析 (Limit / Offset) 对路径的反馈机制</a></h2>
+<p>在使用类似 <code>LIMIT 10</code> 的数量限制时，这并非简单在输出流水线的最尾端裁撤数据输出，其蕴含着足以<strong>重塑系统底层总执行计划选择偏好</strong>的强指向参数特征。包含在逻辑组装模块的 <code>create_limit_path()</code> 过程中。</p>
+<p>当系统识别带有明显的限制指令约束时：
+此时针对优化器早期为表关联节点保留的候选组合，两套并存的主计划指标：<code>cheapest_startup_path</code> (启动代价最低但全局最终执行耗时可能表现中等) 和 <code>cheapest_total_path</code> (初期开销沉重然而遍历结果完全集合最为迅速有效) 的对比关系会由于目标需求的介入遭遇反转。</p>
+<p>例如：针对某双表连接提取 <code>LIMIT 10</code> 时。普通无约束选择中 <code>Hash Join</code> （因具有出色的查询扫描速度从而有着强优越的全局总成本估值），由于启动处理的准备哈希桶时必须完整通量全内部检索导致极高的预开销。在限制取数的特例下，系统会对只需要出库几条的估模型下偏倾支持底层无需庞大初始化可立即提取比对行并且具有良好单匹配检索流指标的 <code>NestLoop</code> 或者是 <code>Index Scan</code> 等算力路线。经过带有上限数量补偿值的公式重新推导换算，<code>LIMIT</code> 将实质改变执行算子的类型优选评估体系策略走向，倾向选择最优时间能够产出起手记录的高启动敏捷节点算法。</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="并行执行计划生成-parallel-query-planning"><a class="header" href="#并行执行计划生成-parallel-query-planning">并行执行计划生成 (Parallel Query Planning)</a></h1>
-<p>自从 PostgreSQL 9.6 划时代地引入并行查询架构以来，如今在 PostgreSQL 18.1 中已经发展成了一个极为庞大、健壮且无缝融入代价优化器（CBO）的深水区模块。</p>
-<p>并行查询的魔力在于：当面对亿级别的海量数据集扫表或重型聚合时，规划器可以果断打破此前单进程单核运算的桎梏，派遣多个后台工作进程（Background Workers）分进合击，最后再由发起查询的主进程（Leader Process）进行数据汇总。</p>
-<p>在这个章节中，我们将深深扎入源码底层的并行网格，搞清楚“谁在下派任务”、“怎么汇总结果”以及“惊艳的并行 Join 是怎么实现的”。</p>
+<p>PostgreSQL 在 9.6 版本引入了并行查询架构，截至 18.1 版本，该架构已深度整合至代价优化器（CBO）中，成为处理分析型查询的重要手段。</p>
+<p>并行查询的核心思想是：在处理大规模数据扫描或复杂的聚合操作时，利用多个后台工作进程（Background Workers）分担计算任务，最终由发起查询的主进程（Leader Process）进行数据整合。</p>
+<p>本章将探讨规划器中与并行执行相关的设定，涉及部分路径的生成、数据的收集汇总以及并行连接机制。</p>
 <hr>
-<h2 id="1-并行的基石抽象partial-path-与-gather"><a class="header" href="#1-并行的基石抽象partial-path-与-gather">1. 并行的基石抽象：Partial Path 与 Gather</a></h2>
-<p>所有的并行计划，在优化器里的表现形式无非是两个全新出现的构件。</p>
+<h2 id="1-并行的基础构件partial-path-与-gather"><a class="header" href="#1-并行的基础构件partial-path-与-gather">1. 并行的基础构件：Partial Path 与 Gather</a></h2>
+<p>在优化器中，生成并行计划的基础在于两种特殊的算子抽象：部分路径和收集节点。</p>
 <h3 id="11-部分路径-partial-path"><a class="header" href="#11-部分路径-partial-path">1.1 部分路径 (Partial Path)</a></h3>
-<p>如果你之前读过“单表扫描”章节必然记得：在 <code>set_plain_rel_pathlist</code> 中，系统不但会添加一条 <code>SeqScan</code> 路径，还会调用 <code>create_plain_partial_paths</code> 添加一条被称作 <code>Partial Path</code> 的分身。</p>
-<p><strong>什么是 Partial？</strong>
-Partial 的物理意义是：<strong>“这条路只要扔给一个独立 Worker 去跑，它只会吐出现有总数据量的一个局部切片（Slice）”</strong>。
-为了实现互不干涉的切片，底层执行器在扫表时会依赖动态共享内存（DSM）里维护的原子游标（Block Counter）。多个 Worker 拿原子操作去抢页，谁抢到了谁读，导致输出的数据是无序且切分的。
-在规划阶段（Planner），它通过设置并行进程数大于零，并且将此路的预期代价值按比例折算入库。</p>
-<h3 id="12-并行安全-parallel-safe-的铁律"><a class="header" href="#12-并行安全-parallel-safe-的铁律">1.2 并行安全 (Parallel Safe) 的铁律</a></h3>
-<p>不是所有的一切都可以拉起并行！优化器在任何一个关系被标记为 <code>consider_parallel = true</code> 前，都会启动一场极度严苛的 <code>is_parallel_safe()</code> 地毯式搜查。</p>
+<p>在“单表扫描路径生成”阶段，<code>set_plain_rel_pathlist</code> 在生成 <code>SeqScan</code> 路径的同时，也会调用 <code>create_plain_partial_paths</code> 生成一条 <code>Partial Path</code>（部分路径）。</p>
+<p><strong>特点</strong>：
+部分路径表示该路径分支如果由某个独立的工作进程执行，它只会输出整体数据的一部分（Slice）。
+为了实现互不干扰的切片，底层执行引擎通过动态共享内存（DSM）中的共享计数器（Block Counter）协调扫描进度。由于各个 Worker 竞争性地获取数据块进行处理，导致部分路径输出的数据通常是无序的。
+在生成计划阶段，系统设定并行的进程数量，并按比例计算和调整这条路径对应的成本。</p>
+<h3 id="12-并行安全性检查-parallel-safe"><a class="header" href="#12-并行安全性检查-parallel-safe">1.2 并行安全性检查 (Parallel Safe)</a></h3>
+<p>在优化器评估某个表关系是否可以采用并行策略（标记 <code>consider_parallel = true</code>）前，必须通过 <code>is_parallel_safe()</code> 进行严格的约束条件检查。</p>
 <ol>
-<li><strong>函数检验</strong>：如果在 <code>WHERE</code> 或者 <code>TargetList</code> 里面引用了一个被标记为 <code>PARALLEL UNSAFE</code> 的用户自定义函数（比如直接写表的函数），那么整个脉络将永久拉黑并行。</li>
-<li><strong>写事务隔离</strong>：绝不可以在含有未提交缓冲数据的临时表（Temporary Tables）上生成并行作业，因为 Worker 进程不允许看到 Leader 的私有本地内存更改。</li>
+<li><strong>函数校验</strong>：如果查询中的 <code>WHERE</code> 或 <code>TargetList</code> 子句引用了被标记为 <code>PARALLEL UNSAFE</code> 的用户自定义函数（如修改表状态的函数），那么优化器将禁用并行路径。</li>
+<li><strong>读写隔离</strong>：对于包含未提交数据的临时表（Temporary Tables），系统不会生成并行作业，因为后台子进程无法访问 Leader 进程的私有内存变更。</li>
 </ol>
 <hr>
 <h2 id="2-收集节点gather-与-gather-merge"><a class="header" href="#2-收集节点gather-与-gather-merge">2. 收集节点：Gather 与 Gather Merge</a></h2>
-<p>光有各个 Worker 在底下苦哈哈地算出局部结果（Partial Path）是不够的。这些支流必须要被收束回主进程（Leader Process）形成唯一的流。
-优化器会通过不断往上推进调用 <strong><code>generate_useful_gather_paths()</code></strong> 强行为底部的 Partial 树冠盖上一个叫 <code>Gather Node</code> 的盖子。</p>
-<p>有了 Gathering，一条残缺的 <code>Partial Path</code> 在顶层看来就重新变成条完整的正常路参与总角逐。按照是否保序，PG 提供了两大收束神器：</p>
-<h3 id="21-粗犷提速的无序统合-gather"><a class="header" href="#21-粗犷提速的无序统合-gather">2.1 粗犷提速的无序统合 (Gather)</a></h3>
-<p>最经典的 Gather 算子。
-Leader 创建多个队列池并启动协程。各个 Worker 算完数据就往共享内存的消息队列里无脑塞。Leader 轮询拿到什么数据就立刻吐给客户端。这是对性能损耗最低的手段，但它把所有的底层排列完全打乱了。</p>
-<h3 id="22-优雅的保序收集-gather-merge"><a class="header" href="#22-优雅的保序收集-gather-merge">2.2 优雅的保序收集 (Gather Merge)</a></h3>
-<p><strong>这是一个极为考究代价取舍的东西。</strong>
-假设你底下一个 Worker 在走并行 B-Tree 索引扫描（保证了单 Worker 自己读到的局部区块是有序的）。Leader 在收到这 N 个流时，如果不加思索地套用 Gather，出来的总集就是一堆交错乱序的数据。</p>
-<p>但在某些场景下，上层非常需要这个 <code>ORDER BY</code> 排序。
-此时 PG 会盖上一个 <code>Gather Merge</code>！
-Gather Merge 节点自带一个 <strong>堆排优先队列 (Min-Heap / Priority Queue)</strong>。它死死盯住 N 个 Worker 发来的管线头，不断抓取极小值向上抛出，从而完美确保了 N 个已排序局部流在合成时，<strong>丝毫不破坏总体的有序性！</strong></p>
+<p>由多个 Worker 独立运算出的局部数据（Partial Path）需要汇总至主进程（Leader Process），形成统一的数据流。
+优化器通过调用 <strong><code>generate_useful_gather_paths()</code></strong>，在部分路径树的上方添加 <code>Gather Node</code>（收集节点）。</p>
+<p>添加了 <code>Gather</code> 节点后，原本局部的路径变为了完整的扫描路径。根据对数据序列的保留要求，PostgreSQL 提供了两种收集策略：</p>
+<h3 id="21-基础的记录收集-gather"><a class="header" href="#21-基础的记录收集-gather">2.1 基础的记录收集 (Gather)</a></h3>
+<p>最常见的无序收集算子。
+Leader 进程启动多个工作进程，工作进程完成计算后将结果发送至基于共享内存的消息队列。Leader 以轮询方式获取数据。这种方式的开销相对较低，但收集的数据不再保持底层工作进程可能自带的处理顺序。</p>
+<h3 id="22-保持排序的收集-gather-merge"><a class="header" href="#22-保持排序的收集-gather-merge">2.2 保持排序的收集 (Gather Merge)</a></h3>
+<p><strong>该策略涉及代价的权衡。</strong>
+如果在下方执行的 Worker 使用了如并行 B树索引扫描（单 Worker 读取的局部数据是有序的），Leader 在合并这 N 个结果流时，若是普通的 Gather，总结果集会变为无序。</p>
+<p>当外层查询（如 <code>ORDER BY</code> 等操作）需要维持数据的有序性时，优化器会考虑使用 <code>Gather Merge</code>。
+Gather Merge 节点维护了一个堆结构优先队列 (Min-Heap / Priority Queue)。它监视 N 个 Worker 传回的数据流，持续抽取最小值合并，从而在整合多路局域排序数据时，保证了<strong>总体结果集的严格顺序</strong>。</p>
 <hr>
-<h2 id="3-并行连接-parallel-joins-的底层黑科技"><a class="header" href="#3-并行连接-parallel-joins-的底层黑科技">3. 并行连接 (Parallel Joins) 的底层黑科技</a></h2>
-<p>如果并行只能做全表扫，遇到 Join 依旧回退到串行那就如鸡肋。PostgreSQL 的王炸在于针对三种不同的物理 Join 设计了出神入化的并行执行版本。</p>
+<h2 id="3-并行连接-parallel-joins-机制"><a class="header" href="#3-并行连接-parallel-joins-机制">3. 并行连接 (Parallel Joins) 机制</a></h2>
+<p>不仅是全表扫描可以并行，PostgreSQL 针对表连接操作同样设计了并行执行方案。</p>
 <h3 id="31-parallel-hash-join-并行哈希连接"><a class="header" href="#31-parallel-hash-join-并行哈希连接">3.1 Parallel Hash Join (并行哈希连接)</a></h3>
-<p>普通的 Hash Join，如果让 N 个进程并行，很可能会有 10 个进程在内存里各自建了一个一样的外表 Hash Table，完全浪费内存，甚至 OOM。</p>
-<p>在 PG 中，通过了史诗级的同步：<strong>基于 DSM 的 Shared Hash Table（共享哈希表）</strong>。</p>
+<p>如果采用普通的 Hash Join，分配 N 个进程将导致各自在本地构建并维系外表的哈希表，不仅浪费内存，且无法协同。</p>
+<p>在 并行执行方案中，系统使用基于 DSM 的 Shared Hash Table（共享哈希表）。</p>
 <ol>
-<li><strong>建表 (Build Phase)</strong>: Leader 在 DSM 中开辟好小表的坑位。所有的 Worker 一拥而上读取内表，然后共同把 Tuple 塞进这唯一的大 Hash 桶里！</li>
-<li><strong>锁步栅栏 (Synchronization Barrier)</strong>: 用一个全局信号，强制等所有 Worker 把建表拼完。</li>
-<li><strong>嗅探 (Probe Phase)</strong>: 放开栅栏！所有 Worker 扭头去对外表（Outer Table）开启无序分块扫。扫出一条就跑去大表碰哈希。彻底把 Join 计算跑满多核 CPU。</li>
+<li><strong>构建阶段 (Build Phase)</strong>: Leader 在 DSM 中分配空间。所有的 Worker 同时扫描内表，并将记录共同填充至同一张共享哈希桶中。</li>
+<li><strong>同步屏障 (Synchronization Barrier)</strong>: 系统使用全局屏障信号，确保所有 Worker 等待共享哈希表完全建立完毕。</li>
+<li><strong>嗅探阶段 (Probe Phase)</strong>: 屏障解除后，所有 Worker 独立对外表（Outer Table）获取分块（执行部分扫描），并行使用哈希表进行探测与计算。</li>
 </ol>
 <h3 id="32-parallel-nested-loop-并行嵌套循环"><a class="header" href="#32-parallel-nested-loop-并行嵌套循环">3.2 Parallel Nested Loop (并行嵌套循环)</a></h3>
-<p>这个看起来非常粗暴但往往有奇效（尤其当使用<strong>参数化路径 Parameterized Path</strong>）时。</p>
+<p>这种模式结构较为简单，但在配合参数化路径（Parameterized Path）时可能发挥重要作用。</p>
 <ul>
-<li><strong>外表切片</strong>：Outer Table 必须是一个 Partial 数据流状态（多个 Worker 在抢外表数据）。</li>
-<li><strong>内表广播</strong>：Inner Table 是串行的 Full 扫描。这意味着每一个 Worker 每次抢到一行外表数据后，都要拿着这行数据去对完整的内表进行一次（通常是 Index Scan 的）扫描。这类似于大数据的 Broadcast Join 思想。</li>
+<li><strong>外表配置</strong>：外部表 (Outer Table) 必须是一个部分数据流（Partial）状态，即由多个 Worker 共同竞争分担外表的扫描数据。</li>
+<li><strong>内表配置</strong>：内部表 (Inner Table) 是完整的串行扫描表现。这意味着每一个 Worker 每次处理一行外表数据后，都要去扫描完整的内表（通常是携带参数的 Index Scan 检索）。这与分布式计算结构中的广播关联（Broadcast Join）思想相似。</li>
 </ul>
 <hr>
-<h2 id="4-并行查询的代价模型打压-cost-punishments"><a class="header" href="#4-并行查询的代价模型打压-cost-punishments">4. 并行查询的代价模型打压 (Cost Punishments)</a></h2>
-<p>你或许会问：既然并行这么天下无敌，为什么 PG 大多数查询还是单机的？
-优化器里存在两个著名的估算打压：<strong>Setup Cost</strong> 与 <strong>Communication Cost</strong>。</p>
+<h2 id="4-并行查询的代价惩罚权重-cost-punishments"><a class="header" href="#4-并行查询的代价惩罚权重-cost-punishments">4. 并行查询的代价惩罚权重 (Cost Punishments)</a></h2>
+<p>尽管理论上并行执行能缩短响应时间，但 PostgreSQL 在判断中会考量并行启动和进程间通信带来的损耗。
+在代价评估中，主要有两个参数起到约束和惩罚的作用：<strong>Setup Cost</strong> 与 <strong>Communication Cost</strong>。</p>
 <ol>
-<li><strong><code>parallel_setup_cost</code> (启动成本高昂)</strong>
-拉起后台进程是一个结结实实的操作系统 <code>fork()</code>。优化器会在计划里硬砸下默认高达 <code>1000.0</code> 代价的初始启动惩罚，这意味着只有执行时间可能需要大几秒的沉重查询，才“配得上”并发。</li>
-<li><strong><code>parallel_tuple_cost</code> (通讯细微阻塞)</strong>
-将数据从 Worker 写入环形缓冲，并在主进程抽出来。这是一笔不可忽略的 IPC 收发代价。若查询结果有千万级交由 Leader 吐出，这笔惩罚加起来极为震撼。系统可能会因此妥协：“还是干脆单核扫完，免得在内存里互相等锁阻塞”。</li>
+<li><strong><code>parallel_setup_cost</code> (启动成本)</strong>
+启动一个工作进程需要申请和分配内存、初始化进程等操作。优化器在此操作上设定了默认的固定开启阈值（默认 1000.0）。这意味着只有预估耗时较长的重型查询，才能够忽略这笔启动成本选择并行路径。</li>
+<li><strong><code>parallel_tuple_cost</code> (元组通讯成本)</strong>
+涉及共享内存中队列的进出及主进程的数据提取等。这反映了进程间通信（IPC）引发的开销。若查询返回结果集庞大，这部分损耗将被累加至总体成本，系统借此模型计算选择更划算的执行模式。</li>
 </ol>
-<p>通过对上述所有精妙代数模型估算并在最后层交火比拼。在 <code>grouping_planner</code> 收尾时刻，如果是自带 Gather 的这棵庞然大物路径总体成本比串行确实大幅胜出，那么恭喜，这张 SQL 稿件，即将驱动整个服务器的 CPU 集群矩阵疯狂咆哮了。</p>
+<p>在 <code>grouping_planner</code> 最终确立执行计划前，只有当携带了 <code>Gather</code> 及其所有下属成本计算节点总和（Total Cost）确实显著低于对应的串行执行路线时，系统才会为相应的 SQL 请求批准并行执行模式。</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="standard_planner-函数入口"><a class="header" href="#standard_planner-函数入口">standard_planner 函数入口</a></h1>
 <p><code>standard_planner</code> 是 PostgreSQL 默认优化器的主要入口函数。</p>
@@ -857,241 +837,207 @@ standard_planner(Query *parse, const char *query_string, int cursorOptions,
 </code></pre>
 <p>每种具体的路径（如 <code>IndexPath</code>, <code>NestPath</code>）都继承自 <code>Path</code> 结构体，并增加特定的字段。</p>
 <div style="break-before: page; page-break-before: always;"></div>
-<h1 id="等价类-equivalence-classes-ec-深度剖析"><a class="header" href="#等价类-equivalence-classes-ec-深度剖析">等价类 (Equivalence Classes, EC) 深度剖析</a></h1>
-<p>在 PostgreSQL 优化器的世界里，无论是对单表扫描条件的过滤，还是在复杂的 Join 规划中寻找匹配路径，亦或是处理 <code>ORDER BY</code> 时查找可用的排序索引，其最底层都离不开一个贯穿全局、至关重要且极其精妙的抽象概念——<strong>等价类 (Equivalence Classes, 简称 EC)</strong>。</p>
-<p>由于关系型数据库的查询语句中经常会出现大量相互关联的过滤条件，例如 <code>A = B AND B = C AND C = 5</code>。如果优化器仅仅从语法层面对抽象语法树进行机械的解析，它就只能识别出 A 与 B 有关、B 与 C 有关。</p>
-<p>然而，一旦系统引入了“等价类”这个基于离散数学中“传递闭包（Transitive Closure）”概念的抽象机制，优化器就仿佛开启了“上帝视角”。它能够在瞬间在这些相互关联的数据关系中，刻画出了一张全图连通的无向图。它能毫不费劲地推断出 <code>A、B、C</code> 这三个字段在逻辑上是完全等价的命运共同体，而且在查询执行时，它们实际的数值必定都等于常量 <code>5</code>！</p>
-<p>本文结合 PostgreSQL 18.1 的最新源码（其核心逻辑实现在 <code>src/backend/optimizer/path/equivclass.c</code> 与 <code>src/include/nodes/pathnodes.h</code> 中），对这个经常被外围技术文章一笔带过，但在 PG 底层却发挥着中流砥柱作用的“幕后英雄”进行一次抽丝剥茧般的硬核拆解。</p>
+<h1 id="等价类-equivalence-classes-ec-深度解析"><a class="header" href="#等价类-equivalence-classes-ec-深度解析">等价类 (Equivalence Classes, EC) 深度解析</a></h1>
+<p>在 PostgreSQL 的查询优化器中，处理过滤条件、连接规划（Join）及排序（ORDER BY）时，系统底层使用了一个关键的抽象结构——<strong>等价类 (Equivalence Classes, EC)</strong>。</p>
+<p>由于关系型数据库的查询语句通常包含类似 <code>A = B AND B = C AND C = 5</code> 的级联关联条件，如果仅从语法抽象语法树（AST）机械解析，优化器只能了解它们各自建立的联系（A 和 B 有关、B 和 C 有关）。
+借助离散数学中“传递闭包（Transitive Closure）”的概念建立的“等价类”对象，优化引擎可以瞬间识别出 <code>A、B、C</code> 作为同一组逻辑等同体的关联特性，并且在这个集合中识别出它们等于常量判断值 <code>5</code>，从而下发指令到相应的查询生成节点中，指导计划优化。</p>
+<p>本章结合 PostgreSQL 18.1 的源码（对应逻辑分布于 <code>src/backend/optimizer/path/equivclass.c</code> 与 <code>src/include/nodes/pathnodes.h</code> 当中），具体剖析这一概念机制构建和利用规则。</p>
 <hr>
-<h2 id="1-源起等价类的生命周期与无向图抽象"><a class="header" href="#1-源起等价类的生命周期与无向图抽象">1. 源起：等价类的生命周期与无向图抽象</a></h2>
-<p>当一条 SQL 语句经过解析和重写，形成查询树到达优化器被展开处理后（例如在 <code>initsplan.c</code> 中的 <code>distribute_qual_to_rels</code> 阶段），系统在遇到 <code>WHERE</code> 或 <code>JOIN/ON</code> 子句中的各种二元布尔表达式时，便开始寻找等价关系的蛛丝马迹。</p>
-<p>当规划器捕获到一个形如 <code>X = Y</code> 的表达式时（严格来说，这里的 <code>=</code> 操作符必须能够在 B-Tree 索引中支持排序，并且在 <code>pg_amop</code> 系统表中被声明具有哈希相容性和等价语义，通常作为 <code>RestrictInfo</code> 存在），系统并不会简简单单把它当作一个普通的过滤条件随手下发。相反，系统会立刻暂停通用处理流程，转而触发一个专属的核心构建函数：<strong><code>process_equivalence()</code></strong>。</p>
-<h3 id="11-从离散条件到传递闭包的野蛮生长"><a class="header" href="#11-从离散条件到传递闭包的野蛮生长">1.1 从离散条件到传递闭包的野蛮生长</a></h3>
-<p><code>process_equivalence(PlannerInfo *root, RestrictInfo **p_restrictinfo, bool below_outer_join)</code> 函数的核心职责就是将一个个零散的点，编织成一张互相连通的拓扑网：</p>
+<h2 id="1-产生机制等价类的构建与融合关联"><a class="header" href="#1-产生机制等价类的构建与融合关联">1. 产生机制：等价类的构建与融合关联</a></h2>
+<p>在 SQL 完成阶段解析、形成查询逻辑树传递进入规划组件后（如处于模块功能 <code>initsplan.c</code> 的 <code>distribute_qual_to_rels</code> 操作过程中），系统在检测涉及表关联提取诸如 <code>WHERE</code> 与 <code>JOIN/ON</code> 要求指令中开始探查推测相等相互间的约束连同存在结构。</p>
+<p>如果是接收符合操作（如属于 B 树排序所支持并且满足具有相容判等标准的等值判定）如 <code>X = Y</code> 时，这并非当成个普通的对比要求判定抛下进行死推行运算，系统调用其对应的专口核心建立功能过程处理：<strong><code>process_equivalence()</code></strong>。</p>
+<h3 id="11-从单布尔约束转化为全局关联闭包推解"><a class="header" href="#11-从单布尔约束转化为全局关联闭包推解">1.1 从单布尔约束转化为全局关联闭包推解</a></h3>
+<p><code>process_equivalence()</code> 函数任务负责通过各个散点拼整组成相互关联大集网群系：</p>
 <ol>
-<li><strong>新建与收容</strong>：假设当前优化器是一张白纸，系统第一次遇到了等式 <code>X = Y</code>。它会立刻分配内存，创建一个新的 <code>EquivalenceClass</code> (EC) 实例对象，并将 <code>X</code> 和 <code>Y</code> 这两个表达式各自包装成 <code>EquivalenceMember</code> (成员) 存放进该集合的链表中。</li>
-<li><strong>顺藤摸瓜的扩容</strong>：紧接着，系统读取到了下一个谓词 <code>Y = Z</code>。在处理这段逻辑时，引擎会先去检索当前已经存在的所有等价类集合。它会敏锐地发现表达式 <code>Y</code> 已经存在于刚刚建立的某个 EC 中了。此时，系统不会再去重复建构新的集合，而是利用等价的传递性，直接把新出现的成员 <code>Z</code> 加入到包含 <code>X, Y</code> 的已有等价类里。于是，这个集合扩充成了 <code>{X, Y, Z}</code>。</li>
-<li><strong>不同集合的合并</strong>：在复杂的查询中，这种情况非常普遍。假设系统在处理某一侧的表连接时，推断出了一个局部的等价类 <code>{A, B}</code>。而在处理查询的另一部分时，得到了另一个局部的等价类 <code>{C, D}</code>。此时，主查询抛出了一个跨越这两侧的连接条件 <code>B = C</code>。
-见证优化的合并时刻上演了！优化器在检索时发现了这两个相互独立的集合片段，于是立刻执行底层的并查集 (Union Find Set) 操作，将这两组集合做物理级别上的融为一体。瞬间，它们合并成了一个跨越整颗查询大树的超级等价族：<code>{A, B, C, D}</code>！</li>
+<li><strong>初发构建创建</strong>：针对初遇相等 <code>X = Y</code> 条件对时。启动建立创建一个 <code>EquivalenceClass</code> 构件实体框架，且相向同时产生把对应的 <code>X</code> 及 <code>Y</code> 两单独表达实体以包装形式作为归属于成员名录 <code>EquivalenceMember</code> 纳接列装在该项内联集合数组中存放。</li>
+<li><strong>延伸关联补充扩展</strong>：随后针对其接续传入表达式如果是类似于带有牵连关联参数指标如 <code>Y = Z</code> 时。逻辑模块经过全局扫描对比核检识别发现当中存有之前构建留档的成员体特征存在，优化处理此时将不再单独开启建立新组集合框架操作开销动作，取由借向代际相系推理规则方法只作直接附加纳入该已持存有的对应所属群集体 <code>Z</code> 合入原同僚共同成为新聚合组合结构群即 <code>{X, Y, Z}</code> 全集。</li>
+<li><strong>分枝相合整体合并情况</strong>：当遇到多方面相互复杂联合约束如分别有构体集合发现持有各自小族系统如局部构成群组 <code>{A, B}</code> 跟独立另外关联所构建之组 <code>{C, D}</code>，在后继收到含有相关贯通串接指派参数匹配关联特征连系条件请求类似于带派下达提供新传入要求参数对 <code>B = C</code>。利用此契机，通过执行相向集交合归结融合（即对应并查集操作机制运算）。优化处理器会将相互具有匹配归对指向相互对准的两结构单元合并为一统一涵盖全局的庞杂综合类特征连同网络参数大族集：<code>{A, B, C, D}</code>。</li>
 </ol>
-<p>通过这种不断进行自我融合与扩张的动态打法，原本在语法树上只是零散字符排列组合的 <code>WHERE</code> 条件语句，在 PostgreSQL 的核心内存池中，被升维成了四通八达、信息密度极高的数据依赖拓扑网络。</p>
+<p>上述的自动延伸扩张推导演化模型为在原先语句展现只反映离散情况特性的各种判断语句赋予升阶转变构筑成了可以穿透查询不同表源跨阶梯互连的逻辑图元框架关联架构基准数据依赖体系底盘。</p>
 <hr>
-<h2 id="2-探视深渊核心数据结构剖析"><a class="header" href="#2-探视深渊核心数据结构剖析">2. 探视深渊：核心数据结构剖析</a></h2>
-<p>为了彻底弄懂这个体系，我们需要查阅 <code>pathnodes.h</code> 这个统御着无数路径信息的头文件，去看看这些结构体在 C 语言层面真实的定义样貌。</p>
-<h3 id="21-统御母体equivalenceclass"><a class="header" href="#21-统御母体equivalenceclass">2.1 统御母体：<code>EquivalenceClass</code></a></h3>
-<p>它相当于等价操作的总容器，掌控并指引着优化器的判断大纲。</p>
+<h2 id="2-内部结构拆解相关核心数据结构属性要素"><a class="header" href="#2-内部结构拆解相关核心数据结构属性要素">2. 内部结构拆解：相关核心数据结构属性要素</a></h2>
+<p>查阅 <code>pathnodes.h</code> 内部对应的用于系统保存表列及路径说明的实体定义了解其中关联核心配置成员字段。</p>
+<h3 id="21-主容器节点定义equivalenceclass"><a class="header" href="#21-主容器节点定义equivalenceclass">2.1 主容器节点定义：<code>EquivalenceClass</code></a></h3>
+<p>充当同组关联特征存储的整体归集库载体与对外展示参考代表凭证对象。</p>
 <pre><code class="language-c">typedef struct EquivalenceClass
 {
     NodeTag     type;
-    List       *ec_opfamilies;   /* 极重要的地标：这个等价类所绑定的 B-Tree 操作符族。*/
-                                 /* 如果没有支持底层等价传递性的 OpFamily（比如 int4_ops），整个推导就不合法。 */
-    Oid         ec_collation;    /* 字符排序规则 Collation (用于解决法语排序和中文排序等号判定不通用的基础问题) */
-    List       *ec_members;      /* EquivalenceMember 列表：里面存放着属于这个家族的所有表列、常量及子计算 */
-    List       *ec_sources;      /* 回源指针：生成这个大图论集合最初的、最“原汁原味”的 RestrictInfo 谓词本身 */
-    List       *ec_derives;      /* 这是由主引擎向外辐射衍生成的用于各级 Join 匹配的约束条件包 */
-    Relids      ec_relids;       /* BitMap：这个集合内所有的属性涵盖跨越了哪些具体的表 (RTE) */
-    bool        ec_has_const;    /* 魔神之眼：哪怕有上万个子表达式，只要这个集合里混入了一个常量值，它就变成了 true！ */
-    bool        ec_has_volatile; /* 是否存在易失的 (Volatile) 不稳定函数成员？如果是，则拒绝下发相关合并逻辑 */
+    List       *ec_opfamilies;   /* 对应的适用判等比较计算执行 B-Tree 函数处理家族族谱标识要求（无支持家族则本等价成立逻辑无效） */
+    Oid         ec_collation;    /* 指定关联对比进行比校排序法则（处理编码地区等排序归类区别标准依据要素） */
+    List       *ec_members;      /* 管理并维护所属收辖的各个归随隶属组成员个体 EquivalenceMember 项参数挂集目录列队链表 */
+    List       *ec_sources;      /* 获取建立最初产生创建推导出存在其相关本原基础原产生关联 RestrictInfo 指令指针保留定位关联项记录源 */
+    List       *ec_derives;      /* 向外界发衍生扩展生成新关联关系供各处匹配判断过滤匹配时所需的依据参数指令包存储组集 */
+    Relids      ec_relids;       /* 指定涵盖涉及包含了对哪相关数据检索表格资源对象发生跨表参照引用标属对应记号 */
+    bool        ec_has_const;    /* 表示指配参数集合组成有明确确定指等可预定常数值计算存在出现指标标记 */
+    bool        ec_has_volatile; /* 说明存在所指包括运算含有可能不稳定存在变化的随变量计算存在时产生不能随意调参替代标记指示功能 */
     /* ... operations info ... */
 } EquivalenceClass;
 </code></pre>
-<h3 id="22-下位个体equivalencemember"><a class="header" href="#22-下位个体equivalencemember">2.2 下位个体：<code>EquivalenceMember</code></a></h3>
-<p>包裹在这个大家庭里的就是一个个具体的运算因子。什么样的节点能成为成员？通常是普通的 <code>Var</code> (代表表里的某一列)，也可能是完整的一个函数运算式 <code>FuncExpr</code>，亦或是 <code>RelabelType</code>（类型强转映射操作封装等）。</p>
+<h3 id="22-所属成员基础元素个体表示equivalencemember"><a class="header" href="#22-所属成员基础元素个体表示equivalencemember">2.2 所属成员基础元素个体表示：<code>EquivalenceMember</code></a></h3>
+<p>是作为其内容容载构成的单个具备属性和存在表征的基础单核。通常指向可以被单独指出的某表中的字段 <code>Var</code>，同样亦可能包含涉及特定指代转换与运行式如含带有调用运指参数如 <code>FuncExpr</code> 运算，格式类型定义如下。</p>
 <pre><code class="language-c">typedef struct EquivalenceMember
 {
     NodeTag     type;
-    Expr       *em_expr;         /* 这个成员实际对应的可执行表达式结构树，比如 Var(T1.A) */
-    Relids      em_relids;       /* 该独立表达式依赖着哪些底层级表 (这对于推断 Join 的上下级顺序异常关键) */
+    Expr       *em_expr;         /* 所具体对应的产生该目标关联比准操作解析后表达运行的逻辑提取计算树构表式实例 */
+    Relids      em_relids;       /* 依赖指出受该项执行存在作用涵盖引向到实际对等底层哪特定对象资源标记，用于明确提取生成阶段推演范围参考基点 */
     Relids      em_nullable_relids;
-    bool        em_is_const;     /* 核心标志位：这个个体不是普通的列，它是一个带着具体化常量的字面值吗？ */
-    bool        em_is_child;     /* 对于分区表操作尤其重要，用来指代基于分区拆分后的细分子节点 */
-    Oid         em_datatype;     /* 该表达式求出该值的底层数据类型，用于强制校验匹配 */
+    bool        em_is_const;     /* 反映区别指征当前自身表现不仅是一项字段参代指它是个确定了能知值的常量数据表达项 */
+    bool        em_is_child;     /* 用于指代分区表派生物属性标识对应状态设定用于拆分区级操作标记判别属性特征预存判断值 */
+    Oid         em_datatype;     /* 该表达式代表推得具有何基础底层类型的判向说明参考属性供严格类类型等向归一配验时要求对等指标用 */
 } EquivalenceMember;
 </code></pre>
-<h3 id="23-ec_has_const-与常量下推的碾压式特权"><a class="header" href="#23-ec_has_const-与常量下推的碾压式特权">2.3 <code>ec_has_const</code> 与常量下推的碾压式特权</a></h3>
-<p>所有介绍 SQL 重写技巧和优化的教科书中，最底层的能力源泉往往都依赖于对常量的处理机制。
-在 PostgreSQL 的等价类体系里，如果某一个具体的 Member 被判定设置了 <code>em_is_const = true</code>（比方说，业务在一段冗长的 SQL 中写了 <code>T1.A = 100</code>，100 被解析为一个带有 const 恒态属性的成员）。那一瞬间，整个包裹它的巨大的 <code>EquivalenceClass</code> 就像是被真理光环彻底附魔了：顶层的 <code>ec_has_const</code> 标志位会被直接置为 <code>true</code>。</p>
-<p>因为一旦优化引擎确认了集合 <code>{A, B, C, D}</code> 在底层算术流转中其实“毫无实际变量计算意义”，这群看似花里胡哨的变量名词，在物理世界全都被具象化且<strong>绝对等同于常量 <code>100</code></strong>！
-PG 在后序规划中无论走到哪一步的算子——无论是多路 Join 进行哈希探测、深层子查询往内圈下推、还是做非常底层的并发索引扫描。只要能读到这个等价类的引用指针，它都能将针对这些巨大字段之间的动态匹配消耗，瞬间点石成金般转换为“直接去磁盘上找寻常数值 <code>100</code> 的确切记录”。并强制给其他关联成员赋予这个常量参数。
-这便是深究 Cost-Based Optimizer (代价优化器) 中为何总是引以为傲的最高维武器——<strong>基于关系映射传递的横向常量下推 (Constant Propagation &amp; Pushdown)</strong> 技术中枢基座！</p>
+<h3 id="23-ec_has_const-标记对执行常值下推规划的影响特征机理"><a class="header" href="#23-ec_has_const-标记对执行常值下推规划的影响特征机理">2.3 <code>ec_has_const</code> 标记对执行常值下推规划的影响特征机理</a></h3>
+<p>基于判定是否涉及固化参值的常量属性操作对提取执行能力是至关影响的核心能力。
+如果在一连串系统收存组编操作处理里接收录入了某组员例如在查询含有确定的语句 <code>T1.A = 100</code> 的加入且记录含有明确指实确值的成员配置打标使得具备带有确认参数特性表现 <code>em_is_const = true</code> 时，该所属群包涵的所有归属关联整体都会将相应指示总体的指示控制判定开关参数 <code>ec_has_const</code> 调拔设成为有效 <code>true</code> 标识反映其全局全等状态发生性质改变特征体现功能生效响应联动反应。</p>
+<p>这种效应标志着此 <code>EquivalenceClass</code> 中包含的诸如集合成员群组所绑结挂系的字段内容实际上在运算判断里在物理实效上都统统视比与<strong>指定常数值 <code>100</code> 所持同对等相一</strong>。因此系统借向通过它传递向它其它的执行关联各节点例如向外其它成员推播该带有常系确估指定常量化属性做匹配过滤操作参数，促使得对于如查关联其他远端子查查询要求中等将利用转换做快速点盘索引调用提取变为具有实际优化实属应用（不需要跨表格对比而变为明确寻直接查对应数结果快速直通取数路线应用效果达成落地变现功能）。这就是系统作为其发挥代价评估优化能够提供具有极效功能威力展示的最为强大基础支撑构架支持表现也就是业内熟知引据使用的<strong>关联式参数下沉计算传递 (Constant Propagation &amp; Pushdown)</strong> 支持引擎核心机能。</p>
 <hr>
-<h2 id="3-隐式衍生约束的魔法-implied-equalities"><a class="header" href="#3-隐式衍生约束的魔法-implied-equalities">3. 隐式衍生约束的魔法 (Implied Equalities)</a></h2>
-<p>光是建立起一套等价类模型其实并没有用，真正让 PostgreSQL 从众多依靠死板规则化干预行事的传统关系型数据库引擎中脱颖而出大放异彩的，是深藏在这背后于 <code>equivclass.c</code> 里的魔法工坊： <strong><code>generate_implied_equalities()</code></strong> 等一系列生成衍生约束条件的函数调用。</p>
-<h3 id="31-跨表谓词下穿衍生机制"><a class="header" href="#31-跨表谓词下穿衍生机制">3.1 跨表谓词下穿衍生机制</a></h3>
-<p>举一个非常具象的例子。假设有应用前端依靠 ORM 代码生成器胡乱拼凑出了这么一句常见的检索：
-<code>SELECT * FROM T1, T2, T3 WHERE T1.id = T2.id AND T2.id = T3.id AND T1.id = 99;</code></p>
-<p>试想一下，在执行计划刚刚起草、<code>T2</code> 和 <code>T3</code> 还处于独立构思如何单表扫描的早期阶段。如果是在传统的非闭包体系引擎中，优化器要去扫描拥有千万数量级的 <code>T3</code> 表时是非常痛苦无助的——因为它压根不知道 <code>T3.id</code> 到底要去搜寻谁。它除了默默去承受代价高昂的 <code>SeqScan</code> 顺序全表扫描硬盘以外毫无办法，然后必须把读出来的成百上千兆数据生硬地抛到上层参与后面缓慢如蜗牛的 Join 过滤匹配。</p>
-<p>但在 PostgreSQL 强大的 <code>generate_implied_equalities_for_column()</code> 函数机制背书中。由于 <code>T1.id</code>, <code>T2.id</code>, <code>T3.id</code> 以及那个常量值 <code>99</code> 全部落网被收容进入了唯一的巨型全域等价类。当 <code>query_planner</code> 调度到底层需要评估扫描 <code>T3</code> 这张表的最佳访问路径 (Paths) 时，代码会拿着 <code>T3</code> 表所独有的 <code>Relids</code> 当作钥匙，去向这个巨型等价中心发问祈求：
-“请问在这里面，有没有哪怕仅能由我 <code>T3</code> 一张表就可以单独享受匹配、不需要往上走依靠关联运算的隐性过滤推演条件（Implied Restrict)？”</p>
-<p>等价类模块通过遍历，敏锐发觉自身不仅有常量 <code>99</code>，并且还有请求者的 <code>T3.id</code>。于是系统这如同虚空捏造出了一把尚方宝剑——自动凭空变出了一条原本在文字层面并不存在、但是在数学上绝对站得住脚的确凿过滤条件：<code>T3.id = 99</code>！
-随后，这个崭新生成的过滤条件参数会被作为推导限制被即刻下发，绑定成为了 <code>T3</code> 自己的单表专属扫描谓词。原本 <code>T3</code> 即将遭遇的那一波漫长的百万行 SeqScan 以及在内存中同前面表死磕合并运算的恶劣命运随之烟消云散。这一动作直接将其成本评估定性为了超轻微代价量级：不仅可以走索引，而且只需要在极其短暂的时间内针孔定位完成 I/O 的顶级访问模式——<strong><code>Index Scan (T3.id = 99)</code></strong>。优化器提速狂飙的大幕在这个节骨眼上拉开。</p>
-<h3 id="32-强前置互验与阻止笛卡尔核爆"><a class="header" href="#32-强前置互验与阻止笛卡尔核爆">3.2 强前置互验与阻止“笛卡尔”核爆</a></h3>
-<p>退一万步讲，哪怕在这个逻辑运算链条上我们完全没有看到常委级别的常量出现，仅仅只是关联起了跨表的字段集合 <code>{T1.A, T2.B, T3.C}</code>。当优化器因为表的数据量选择率等等复杂原因估量，觉得有必要先将 <code>T1</code> 和 <code>T3</code> 来一场连接大作战执行 <code>T1 JOIN T3</code> 时（例如系统估算出即使盲连，两边返回的表行数也非常极小）。哪怕你回头审视那份极端的业务传入的原始 SQL 文本，压根根本找不到那俩表哪怕有丝毫一星半点的字段关联语句。</p>
-<p>但神圣而强大的 PostgreSQL EC 抽象集合模块仍会一视同仁。由于它坐拥此三子于一室，明知三方连通有着等同的强逻辑背书，系统便会极其从容地通过派发操作，生成出一条隐性联姻线缆：创造出 <code>T1.A = T3.C</code>，并将其强行施加这二者初次结合的连接判断标准（Join Qual）！</p>
-<p>这套机制几乎完美且不可破防地从代码根本设计上截断化解了一场原本必然演变为笛卡尔全铺积惨剧的糟糕连接爆炸隐患。当我们从这个宏大的视角去凝视晦涩生僻的等价类 (EC)，它存在的真正意义从不光是进行简单语法替换，<strong>它更是为了阻滞底层检索灾难、铺设规划指引路径和用以空间降维的最坚实的守护神与路标塔。</strong></p>
+<h2 id="3-引发衍生隐条件操作逻辑-implied-equalities"><a class="header" href="#3-引发衍生隐条件操作逻辑-implied-equalities">3. 引发衍生隐条件操作逻辑 (Implied Equalities)</a></h2>
+<p>在掌握拥有管理相关表连通推算集合信息后，发挥真正体现优化价值的作用是将隐藏关联信息变现为具体的检索操作规则，负责这项工程转配功能的实现在于调用类似向内设定的系列转化构建程序： <strong><code>generate_implied_equalities()</code></strong> 操作实现下派。</p>
+<h3 id="31-下派附加生成的特加同源匹配预检查询关联条件指派派生指令机制"><a class="header" href="#31-下派附加生成的特加同源匹配预检查询关联条件指派派生指令机制">3.1 下派附加生成的特加同源匹配预检查询关联条件指派派生指令机制</a></h3>
+<p>根据存在情况举例说明针对诸如有存在横向串接关接操作等要求处理语句如：<code>SELECT * FROM T1, T2, T3 WHERE T1.id = T2.id AND T2.id = T3.id AND T1.id = 99;</code></p>
+<p>倘系统不带有如上的串并合群全图分析统括能力进行单视的执行分析进行单独在没有联系指导针对大批量数据存储表例如 <code>T3</code> 表进行数据拿取筹备工作预读时候将会没有其他指向支持陷入全部提取查盘数据（SeqScan），形成高昂代价运算成本并转托送其往上合并关联慢执行进行联合判断。
+可是通过建立拥有包含所有此列相关查询请求及指定参考标的值关联统括全域网路集合体 <code>EquivalenceClass</code> 作为支撑引导查核时。在其规划查询计划模块开始着手预调针对单表如 <code>T3</code> 相关查找路径规划制定准备提取 <code>query_planner</code> 进行查对操作前，规划通过指定属于 <code>T3</code> 可以使用独有专属自身可以识别利用之 <code>Relids</code> 当引用识别对中枢等关联总池请求是否有符合下发可以单独自用以优化缩小预读要求附加推算判定提查条件 (Implied Restrict) 之匹配对应要求提求咨询请求服务下行发放查照对比支援应用情况比测查询提供。
+因等值中包含拥有常数值标 <code>99</code> 外包含可支持映射利用匹配提查申请发起表者相关所属挂钩成员关联例如在池组中的对应所具有存包含指代有归向代表存在表示特征归联指向对象如在内的所列有的 <code>T3.id</code>，由此经比验可凭由内在机制相接推引自动创造配给形成了一系列未从业务表面给出但在原结构连环计算保证对齐不出偏误能够满足具有可行实施能够指导限制筛选符合提取对应所需标值操作控制提取限定过滤请求限定控制判定指令依据限制说明输出：即将创建下放附与限制给要求单查询使用的 <code>T3.id = 99</code>！这就使得表执行转入了能够立刻生效发生极大影响通过走高效调用 <code>Index Scan (T3.id = 99)</code> 实现极其迅捷处理减少庞杂总合代价操作效应产生落地发挥关键威力提升改变全局执行状态走向判断起定点根本发生决定逆转控制执行核心影响关键。</p>
+<h3 id="32-控制杜绝大爆炸笛卡尔笛积效应错误影响阻隔规避"><a class="header" href="#32-控制杜绝大爆炸笛卡尔笛积效应错误影响阻隔规避">3.2 控制杜绝大爆炸笛卡尔笛积效应错误影响阻隔规避</a></h3>
+<p>另一方面考虑，对于缺乏具体直给明标指定恒指限制情况查询如下要求参数只含 <code>WHERE T1.A = T2.B AND T2.B = T3.C</code>，当评估机制评估判定判断后认定由某些诸如比存量规模及选量占有分析比较下认定支持应该首先发起针对先联合组织其中并无通过语法直列具有要求关合约束命令关联限定二者比如是发起 <code>T1 JOIN T3</code> 联合配对接合运算优先执行排列方案计划执行生成预划指令请求要求分配调送预估方案操作指示下放之时。
+为防止引发因为不存在直接表明关联查询从而造成被迫启动毫无限制条件做全面交叉连结大比拼合并也就是被认定灾难性的全范围比拼配笛卡尔计算乘积关联爆炸错误指令产生（其影响极度劣质消耗算耗资源极庞影响大拖卡速度等后果现象操作表现引发故障等）。系统将会从容的依旧能够利用已经掌控此三子成员纳入涵盖共同享有属籍所受同控连互归结在此具有同层统一受控等层体系关联关系族集统称这等相依等价系族中，生成给出对准派送给要求交连双方提供指引明确约束对应连接参照验证判断限向指派交连约束（指配生成创造具有控制联合对应指标限制给到这要求的联合操作方指导控制限定约束比参判定比如限制发派令指下传配出并硬性指令作为提供给关联要求限制准向标之要求提供准准配交连使用即产生指下发限定要求为 <code>T1.A = T3.C</code> 并给要求使用控制此作为连结操作核定判对标准的约束说明指令）。有效切出一条合理高效防止算力错置运算的明确指导运行控制管理底盘基座防止恶劣化执行现象破坏可能发生规制。</p>
 <hr>
-<h2 id="4-与序列流向-pathkeys-的极高依附羁绊"><a class="header" href="#4-与序列流向-pathkeys-的极高依附羁绊">4. 与序列流向 PathKeys 的极高依附羁绊</a></h2>
-<p>如果我们想要精通于理解 PostgreSQL 内核反应堆里最高深的代计算法则（Cost 和代价比拼），就必须得先理顺困扰着最多数新手研究员的那条最生硬的死结：
-<strong>判断或者指代某一条执行记录长河是否在这个阶段内部已经恰巧满足了你要求的排序规则配置时，它的终极判断信标（Beacon），永远不是去简单僵冷地对比诸如所谓的类似 <code>ORDER BY Table1.TName</code> 等几个简单的字符串名，它的底层引信是远远地锚定、并且绑定包裹着一整颗等价类！(指向 <code>EquivalenceClass</code> 的母体内存地址)。</strong></p>
-<p>这段千丝万缕的核心羁绊将在专门用来剖析排序内核的《PathKeys》深度核心篇章中大规模展开，但鉴于它们二者生死的关联性我们必须要在本节作一浅尝揭开。</p>
-<p>为什么在物理的数据结构设计抽象里头，<code>PathKey</code> 链表的这个核心必须紧紧夹杂挂钩 EC 的指针向标而不是直接对应上一个什么 <code>Var(A)</code> 的变量位呢？
-假设现在系统在堆排查探的过程构建了一个包含 <code>{t1.A, t2.B}</code> 的局部 EC 家族。
-目前，底层引擎派出了一个得力干将老老实实地从磁盘上沿着建立在 <code>t1</code> 的 B 树索引走了一轮查找（<code>IndexScan</code>）。由于检索特性沿着那棵树一直扫出来，这串喷涌而出的结果集先天在列 <code>t1.A</code> 上就是顺畅递增且有条理的了。这时刻这个路径会对外吐露它带有光环的一份证明报告册：它的 <code>pathkeys</code> 数据包说明了：“注意我手头这堆数据可是完美臣服并且符合那个极其著名的 <code>EquivalenceClass{t1.A, t2.B...}</code> 流向哦” 。</p>
-<p>执行计划层层往上汇报。然而在终点站查询的最外层顶端遇到了一个极高的过滤巨石：你的主逻辑命令强要求系统在这儿汇总做最终结算排序：<code>ORDER BY t2.B</code>。
-这会子，<code>ORDER BY</code> 这个引擎管控模组可是非常贪婪也极度渴望地去向查询主决策模块打听索要：“从下面那些底层兄弟一路干活抛给我的结果流里面，有没有哪一个特别机灵的小伙伴，它那条数据线的供货排向老早以前就按我想要求看的 <code>t2.B</code> 顺顺利利的整理分配过给大伙儿了？”</p>
-<p>工程代码在此展现出了神迹。底层规划器绝不会死板僵硬要求查核里面是否真就包含了 <code>t2.B</code> 这一串字母的完全一致打标（字符串硬比对在这个档口铁定会导致出现“我底下是用按照 A 来规整出来的，这上边死命令说要核实 B 的顺位，风牛流马不相及，统统当作废处理强行大乱再重新大把内存全部重排梳理一遍序列！”的惨烈悲剧和性能严重错判）。而是拿出从底下沿着流程传向自己的“这个状态集归档的内存地址引用指针”，去跟自己上游规划里的渴求期望目标硬顶比拼：比对上了那个同样身为这个族长神圣统御者也就是同等价阶位的 <code>EquivalenceClass</code> 实体指向指针！</p>
-<p>一旦引擎探知下面底层那些数据特征关联着的 EC，竟然 <strong>及其巧妙合拍地等同于自己所需要拥有的</strong>那个实体指针！这两套体系简直是宛如雷击瞬间拍板互相对上眼：“那是因为在早前一开始 SQL 过筛阶段我们全伙计就了解了 <code>t1.A = t2.B</code> 等式的永恒不变关系。我此刻验收到下方提交上的这份文件其实已经完美踩着贴着 <code>t1.A</code> 是顺位排列整理的结果了。如此一来从物理计算普遍真理的原则上来谈，在当下这一瞬间这流体、这份顺序态，早已就绝对并且纯天然地履行等同遵从了我亟需最迫切想要见到的 <code>t2.B</code> 排好顺序的大前提啦！”</p>
-<p>这就意味着，只要它在底下随手捡便宜借用了在一个小小列名 A 身上一条微不足道低消费的索引遍历跑法，竟然可以通过一路往上通过跨阶层的核心概念概念转移包裹魔法替换法，神乎其技的省跨越了大表和执行节点之间的巨大鸿沟。顺带来连在最尾端呈现全部表格输出的时候连那些最庞大要吃掉好几个 G 运存排序的超巨型的全排列重排内存杀手节点都能省得一去不回！这种在 RDBMS 执行领域宛如神出鬼没般的维度换挡置换的空间转移技巧。对现在那些随便做几个粗暴生硬匹配依赖玩具解析层去优化的粗制型引擎看来，近乎如同不可跨越、绝不明白的异星位面技术级打击。这代表着一代代 RDBMS 先驱设计大师几十年代码打磨结晶下来的算法思想极意巅峰——也是使得它这只大象至今立于不败之地无可替代的关键壁垒内核深渊所在。</p>
+<h2 id="4-equivalenceclass-在规范输出结构参数标记序列传流上的协同体现支撑"><a class="header" href="#4-equivalenceclass-在规范输出结构参数标记序列传流上的协同体现支撑">4. <code>EquivalenceClass</code> 在规范输出结构参数标记序列传流上的协同体现支撑</a></h2>
+<p>此部分理解涉及到针对例如查询需要执行排序归类的计划执行中需要判定是否有可以引借和无需重算的现有支持使用状态存在等判断。
+对是否达成某一种排序状态需求的检查判断方式中，最内核引标参照使用对比的，其实质是比测对于此路径记录标记 <code>PathKey</code> 所锚绑定包裹引用关联的那整个总的底层体系框架结构对象——也就是<strong>它指接绑靠之同在内的那个代表族集对象的 <code>EquivalenceClass</code> 的地址实体指针标志！</strong>（而不是通过机械生硬对照所谓的像记录列标 <code>TableA.AttrCol</code> 字符串名称名称去进行单项简单粗匹配判断对比操作）。这也构成了如若不具有这套机制体系将难以在不同表层次阶不同操作流程转移状态流中能平滑接对和快速等用等同顺移免开新内存栈等进行不重计算排期操作的高等算耗保留等跨阶段支持和状态引用指称转接的基盘框架构建关联连接基柱功能构成支柱的基盘设施根本机理建设关联影响所在。</p>
 <div style="break-before: page; page-break-before: always;"></div>
-<h1 id="路径序列与排序核心密码-pathkeys"><a class="header" href="#路径序列与排序核心密码-pathkeys">路径序列与排序核心密码 (PathKeys)</a></h1>
-<p>几乎所有关于性能优化的面试题，最后都会绕回一个命题：“为什么加了索引，ORDER BY 或 GROUP BY 变快了？”
-在执行引擎的表象逻辑看来似乎是常理，但如果要在拥有极大复杂组合的 PostgreSQL 代价优化内核（CBO）中完美统一地实现这一机制，就需要一种能够<strong>统一度量并且伴随路径推演任意流转的通用通货</strong>。</p>
-<p>在 PG 18.1 中，这套跨越所有的关系代数操作、用来锚定和流转排序特征通货，名叫 <strong><code>PathKey</code> (路径键)</strong>。相关代码的核心座落于 <code>src/include/nodes/pathnodes.h</code> 和 <code>src/backend/optimizer/path/pathkeys.c</code>。
-不懂 <code>PathKeys</code> 的设计与传播机理，你就无法真正看懂优化器在 <code>add_path</code> 里做出的那些惊心动魄的剪枝取舍。为何某些代价极高的“破烂”执行计划，反而会在复杂查询的最后关头被 PG 奉为至宝？</p>
+<h1 id="路径输出排序属性特征体系-pathkeys"><a class="header" href="#路径输出排序属性特征体系-pathkeys">路径输出排序属性特征体系 (PathKeys)</a></h1>
+<p>在关系型数据库对查询计划进行筛选比对时，往往不仅需要考量不同分支下执行路径的运行时间代价成本大小，还要将其运行输出流天然带附序列顺序的特征与查询语义中涉及的需要有序操作动作结构加以考虑比较。</p>
+<p>为了满足这个功能设计需求并在整个执行优化器内部不同分析计算层位提供可以统一标识并继承转递评价标准标称凭证，PostgreSQL 代价优化内核（CBO）抽象总结出来了一个通用性特设结构组件体系——<strong><code>PathKey</code> (路径排序键特性体系)</strong>。
+本系列逻辑底层基准结构构筑存储实现定义核心在相关代码中存放与 <code>src/include/nodes/pathnodes.h</code> 和关联函数计算操作支持等位于 <code>src/backend/optimizer/path/pathkeys.c</code> 源码区域。掌握 <code>PathKeys</code> 能够帮助理解优化器如何规避冗余的排序节点。</p>
 <hr>
-<h2 id="1-结构起底什么是-pathkey"><a class="header" href="#1-结构起底什么是-pathkey">1. 结构起底：什么是 PathKey？</a></h2>
-<p>优化器在评估物理路径（比如一次走索引的扫描、或者哈希连接）时，不仅看“花了多大 Cost”、“能吐多少 Rows”，还必须精确标注出这股数据流<strong>携带的元素排序特征</strong>。</p>
-<p>这套特征在源码中由 <code>List *pathkeys</code>（链表）承载。其基础粒子组件 <code>PathKey</code> 如下：</p>
+<h2 id="1-原型原理分析pathkey-结构"><a class="header" href="#1-原型原理分析pathkey-结构">1. 原型原理分析：PathKey 结构</a></h2>
+<p>优化引擎调度分析路径在核标物理算子生成模型效能时（比如涉及 B 树等索引查询读取、或是合并联合连接操作结果产生），通过分析标记此查询分支将返回处理流的数据，将所包含具备可描述排列规范要素等附加给定的关联标记组装构成序列供上层判定。</p>
+<p>在代码体现和实际存算中依赖 <code>List *pathkeys</code>（指针链表结构组织）。它本身单个组件抽象节点数据框架为：</p>
 <pre><code class="language-c">typedef struct PathKey
 {
     NodeTag     type;
-    EquivalenceClass *pk_eclass;   /* 极其震撼：它不指向具体的列，而是指向一个覆盖全部域的等价类！ */
-    Oid         pk_opfamily;       /* 排序操作符族 (如 B-tree opfamily OID)，指定排序规则 */
-    int         pk_strategy;       /* 升序 ASC 还是 降序 DESC */
-    bool        pk_nulls_first;    /* NULL 值是悬浮最前还是垫底 */
+    EquivalenceClass *pk_eclass;   /* 关联向所抽象映射其全表征相连域对应的等价类对象群组实体 */
+    Oid         pk_opfamily;       /* 表示限定规定所适用执行对比规范的操作符组别 (如 B 树关联 OID 等类型规定设定)，指派此序排序基本规矩规则 */
+    int         pk_strategy;       /* 限定此路向对应的输出规则：比如为升序向上递进 ASC 和 降向退减顺排的 DESC */
+    bool        pk_nulls_first;    /* 配置有空置数据标识记录 Null 悬置顶位起始呈现排列特性或是顺推退后归档后随落底 */
 } PathKey;
 </code></pre>
-<h3 id="11-为什么主体必须包裹-equivalenceclass"><a class="header" href="#11-为什么主体必须包裹-equivalenceclass">1.1 为什么主体必须包裹 <code>EquivalenceClass</code>？</a></h3>
-<p>在上一个附录《等价类 (EC)》中埋下过伏笔：PG 极度高超的设计使得 <code>PathKey</code> 的最核心属性 <code>pk_eclass</code> 直接硬链接在了 <code>EquivalenceClass</code> 上。</p>
-<p>试想场景：<code>SELECT t2.info FROM t1 JOIN t2 ON t1.id = t2.uid ORDER BY t2.uid;</code>
-在优化器构建最底层时，系统发现 <code>t1</code> 表的 <code>id</code> 有 B-Tree 索引。于是探索出极速路径 <code>IndexScan(t1)</code>。这条底层路生成的初始 <code>pathkeys</code> 护照上骄傲地写着：“我送出的源头数据是严格基于 <code>EquivalenceClass{t1.id, t2.uid}</code> 排序的！”</p>
-<p>当数据流抵达上层、需要执行全局决算的 <code>ORDER BY t2.uid</code> 时：
-假若当年仅仅用字符串列名映射作为载体（如：<code>pk_var = t1.id</code>），那么顶层节点拿起客户要求的 <code>t2.uid</code> 一碰：“天啊，底层是 t1.id，客官要的是 t2.uid，给我退回！” 于是迫使几百万数据强行扔进 <code>Sort</code> 内存重排栈，引发算力海啸。</p>
-<p><strong>但是</strong>，正因为 PG 的 <code>PathKey</code> 绑死的是极度抽象化的等价类！
-顶端审判官只需拿 <code>t2.uid</code> 代表的 EC 句柄，和底层的那个 EC 指针一碰。刹那间同气连枝完美吻合 (那正是因为 <code>t1.id = t2.uid</code>，起初就被合二为一)。判定官放行，极其平滑地帮引擎省切掉了最昂贵的重排局！</p>
+<h3 id="11-与-equivalenceclass-的关键结合"><a class="header" href="#11-与-equivalenceclass-的关键结合">1.1 与 <code>EquivalenceClass</code> 的关键结合</a></h3>
+<p>PostgreSQL 在架构时并没有简单地将此记录映射至单个列数据标记而是采用使用更顶层抽象地指向到等价类集体系架构操作——即将核心关键指标 <code>pk_eclass</code> 直接定指向链接关系在了某指定提取生成关联的 <code>EquivalenceClass</code>。</p>
+<p>针对此类架构情况说明：执行如 <code>SELECT t2.info FROM t1 JOIN t2 ON t1.id = t2.uid ORDER BY t2.uid;</code>。
+在初期底层路径评估分析构建时期如果确认对于 <code>t1表的id列</code> 使用索引扫描构建取得优执行访问效率提取路径 <code>IndexScan(t1)</code> 后。此时这条产生在底线的查询将为其生成赋立其输出带有针对源字段排向能力宣告背书的说明属性集合，标记此查对获取具有等同在建立关于 <code>EquivalenceClass{t1.id, t2.uid}</code> 为基础之上的规则排序。</p>
+<p>而向查询执行层级汇流至规划高位运算处理全局要求排序 <code>ORDER BY t2.uid</code> 需要下传校验提取符合自己判定标准结果组序路径支系时：
+若是简单以最初物理名称绑定例如用原 <code>t1.id</code> 对接比比验证 <code>t2.uid</code>，则在语义判别发生由于字面映射偏差引发被判作不能等视对待错误拦截（此操作容易引起被迫推选代价开销更大的通用数据堆栈 <code>Sort</code> 进行资源耗损排序流程处理）。
+由于 <code>PathKey</code> 的比标采用指由等价族做为标识符句柄关联验证方法。最终判断仅判断由底层提供指派上送数据关联 <code>t1.id</code> 对应挂名其名下主位指针是否和由执行要求的 <code>t2.uid</code> 主控同受相同的相等逻辑簇即可直接得到判定结果完美配对重叠验证结果吻合有效。大大减少不合预期需要被动使用消耗运行资源追加排列归类的情况事件。</p>
 <hr>
-<h2 id="2-需求侧大一统规划器的排序货币化"><a class="header" href="#2-需求侧大一统规划器的排序货币化">2. 需求侧大一统：规划器的排序货币化</a></h2>
-<p>在嵌套复杂的 SQL 分析大河中，混杂了无数试图干预排序的操作符：</p>
+<h2 id="2-操作请求向统一形式的转换"><a class="header" href="#2-操作请求向统一形式的转换">2. 操作请求向统一形式的转换</a></h2>
+<p>在综合型分析请求当中具备各种不同的对于底层上发排序归队约束期待动作需要。</p>
 <ul>
-<li>终端发出了 <code>ORDER BY a, b</code> 要求顺位。</li>
-<li>聚集指令下了 <code>GROUP BY c, d</code> 在启动 GroupAgg 前要求聚类有序。</li>
-<li>过滤节点加了 <code>SELECT DISTINCT e</code> 企图通过排序来实现滑动去重。</li>
-<li>大名鼎鼎的 <code>Merge Join</code> 强迫两营输入流按等同键绝对序列接壤。</li>
+<li>要求通过指令如 <code>ORDER BY a, b</code> 得到有序排档响应展示。</li>
+<li>由聚集命令下发送求像 <code>GROUP BY c, d</code> 要求为了可以平顺流完成统计之前要求归并序列表态。</li>
+<li>在指令如过滤除清含有 <code>SELECT DISTINCT e</code> 的执行尝试想依靠排期去重计算得到剔重序列。</li>
+<li><code>Merge Join</code> 将强制对左右子路径输入的参数需要达到符合要求的连同有序比配进行匹配交结合。</li>
 </ul>
-<p>对于老手工作坊式引擎，可能需要为以上所有情况各自手编一套“排序对账单”。
-但在 PG 那神级铺陈的 <code>pathkeys.c</code> 架构中，所有这种排序请求，无论初衷为何，都会在预检阶段被诸如 <code>make_pathkeys_for_sortclauses</code> 的函数接管，彻彻底底<strong>等价兑换为唯一标准流通物——<code>PathKey List</code> 链表。</strong></p>
-<p>自大优化网络全面铺开的那一顷刻，优化器这个中央智脑，再也听不懂所谓的 ORDER BY 或 GROUP BY。它在判断下层分支能否直接插接时，唯一遵循的就是查验 <code>pathkeys</code> 国书。</p>
+<p>为支持不同的底层计算机制能具有通用统一的可对标处理对比审核衡量参照坐标依据物。在此套被 <code>pathkeys.c</code> 框架体系管理之中，无论是怎样的请求，所有的需要有序支持的意图参数均都会向通过系统提供的统一调用模块入口预核比如 <code>make_pathkeys_for_sortclauses</code> 作整合转换成唯一的标准序列传递比较物件——<strong><code>PathKey List</code>（路向结构键链表）</strong>。</p>
+<p>在往后各个不同分支对碰或评估筛选审核时不再判断请求起因是什么关键字调用语句，只需提供审核要求给出的比对表参照与执行实际拿出的附随参数 <code>pathkeys</code> 进行统一对比就可以判断是否符合预制需要特征。</p>
 <hr>
-<h2 id="3-供给端长河pathkeys-的诞生传承与覆灭"><a class="header" href="#3-供给端长河pathkeys-的诞生传承与覆灭">3. 供给端长河：PathKeys 的诞生、传承与覆灭</a></h2>
-<p>面对这条流转下的继承物 <code>pathkeys</code>，不同物理计划节点态度截然不同：</p>
-<h3 id="31-源氏的血脉底层索引扫描"><a class="header" href="#31-源氏的血脉底层索引扫描">3.1 源氏的血脉：底层索引扫描</a></h3>
-<p>最纯粹的 <code>pathkeys</code> 孕育自 B-Tree。定位到 <code>indxpath.c</code> 内部的 <code>build_index_pathkeys</code>：
-当检索刺入索引结构时，PG 产生出一个拼接的衔接 <code>PathKey</code> 队列，赋予在即将上抛的 <code>IndexPath</code> 头上。如果是走路线粗犷的 <code>SeqScan</code>，生成的归口登记簿对于 <code>pathkeys</code> 则是一个干脆的 <code>NIL</code> (完全空指针)，宣告这是一堆无序的散沙。</p>
-<h3 id="32-屠夫hash-join-的破壁"><a class="header" href="#32-屠夫hash-join-的破壁">3.2 屠夫：Hash Join 的破壁</a></h3>
-<p>当你汇入双表关联：
-性能王者 <strong>Hash Join</strong> 的作风极其粗野。它压根不顾及底层是不是辛苦排好序的。它的底盘是将小表倒进哈希池开桶，随即拿大数据集激化碰撞。碰撞出水瞬间，所有的历史排序规律全盘崩散。
-因此任何基于 <code>hash_inner_and_outer</code> 衍生的路径，它的光环继承簿 <code>path-&gt;pathkeys</code> 必定被无情洗白清零成为 <code>NIL</code>。</p>
-<h3 id="33-恪礼的承传者nestloop-join"><a class="header" href="#33-恪礼的承传者nestloop-join">3.3 恪礼的承传者：NestLoop Join</a></h3>
-<p><strong>嵌套循环联合 (NestLoop)</strong> 恪守着外表驱动一再往复过滤匹配的准则。
-外环本有的序列起伏节奏，在吸纳内表后竟然绝妙地没有丝毫偏差！因此优化器会温柔地调用 <code>build_join_pathkeys</code>，把外表（Outer Rel）持有的金字令箭原封不动、极其虔诚完整地誊抄接手下来！</p>
+<h2 id="3-生成产生及传承继承与核销清理过程"><a class="header" href="#3-生成产生及传承继承与核销清理过程">3. 生成产生及传承继承与核销清理过程</a></h2>
+<p>不同的路径查询对于能够产生自带参数属性继承传递流向有不同的特性效果和反馈机制：</p>
+<h3 id="31-自发产出继承者传递源支持的结构读取模式"><a class="header" href="#31-自发产出继承者传递源支持的结构读取模式">3.1 自发产出继承者传递源：支持的结构读取模式</a></h3>
+<p>例如在 B树等自身能形成特征获取流中。源码处理归属在于例如 <code>indxpath.c</code> 下属模块部分逻辑中在调用查向读取例如通过 <code>build_index_pathkeys</code>：
+伴随查找处理顺带附贴一组标有自己产生能顺向匹配获取的拼接 <code>PathKey</code> 数据结构属性队伍交于抛上的路线携带头等提供作为声明参考，相对比较对于像大范围扫描的例如 <code>SeqScan</code> 顺序平推的此获取对等于毫无特殊提取特性标识记录返回赋上对于说明则提供归为一个完全表示虚空指针对象表示为空向其报告说明 <code>NIL</code> (提供表示此返回是一个并不保留特型序列情况的打靶表示)。</p>
+<h3 id="32-截阻覆灭重清结构特征产生者如哈希处理"><a class="header" href="#32-截阻覆灭重清结构特征产生者如哈希处理">3.2 截阻覆灭重清结构特征产生者：如哈希处理</a></h3>
+<p>涉及到通过基于比如带有类似破坏输入原始参数记录排期操作特性运算的情况机制：例如被归为散集装载撞击验证哈希验证的：
+此由于在操作时依赖装入桶结构特征以碰撞重构完成动作处理因此将会丢失原有由提取输入底层本身带有次期特征记录，在此经转后由于特性灭失所有由此依靠产生所派生结构衍生出去输出将统一强判清理消除洗除重新定义输出不具有排列能力报告设定位 <code>path-&gt;pathkeys</code> 指设为空置归宿状态 <code>NIL</code>。</p>
+<h3 id="33-无差转录延续流传保留机制传承体例如迭代嵌套循环方式"><a class="header" href="#33-无差转录延续流传保留机制传承体例如迭代嵌套循环方式">3.3 无差转录延续流传保留机制传承体：例如迭代嵌套循环方式</a></h3>
+<p>如在此种模式结构动作（如 NestLoop）等不产生更改外部原提供入项其特征排位相序特征获取动作下：
+在其完成处理整合运算往高维度流输出推送数据过程中依然保有着来自初始引入源提供的相同表现规律一致体现的情况之下系统将会安全放行原装抄录转移引用保留传递原样提取信息交棒下去到本节点输出对外公开引用说明中不做阻断破坏。（通过提取函数拷贝等引用调用 <code>build_join_pathkeys</code> 对向处理执行操作实现无耗损引用指配）。</p>
 <hr>
-<h2 id="4-终界审判修剪免死金牌-path-pruning"><a class="header" href="#4-终界审判修剪免死金牌-path-pruning">4. 终界审判：修剪免死金牌 (Path Pruning)</a></h2>
-<p>这也是隐藏于代价运算机制底下最为反转的绝魂之跃。
-前文提过：<code>add_path()</code> 是一座极度现实的达尔文“裁决法庭”。如果不带排序加成，一条起步慢、总价高昂的路，百分百会被当场遗弃清盘！</p>
-<p><strong>但是！</strong> <code>PathKeys</code> 的设计存在，作为优化器世界的最高精神免死金牌，超降维介入干涉了丛林淘汰法则！</p>
-<p>我们在极其严密的 Cost 较量之前，会看到如圣言般的预演过滤：<code>pathkeys_contained_in(path1-&gt;pathkeys, path2-&gt;pathkeys)</code>。</p>
-<p><strong>一出震撼的剧本模拟</strong>：</p>
+<h2 id="4-pathkeys-引导裁决干预对优选结果裁剪机制的保留容赦操作干预"><a class="header" href="#4-pathkeys-引导裁决干预对优选结果裁剪机制的保留容赦操作干预">4. <code>PathKeys</code> 引导裁决干预：对优选结果裁剪机制的保留容赦操作干预</a></h2>
+<p>在此设计也决定了参与后续判定是否可留在计划路线上的判断。
+对于底层对碰分析去杂清理优劣模块判断如 <code>add_path()</code> 操作流程函数内部，存在着依赖对比比算结果开票抉除丢弃耗损较高运算计划手段保障。</p>
+<p>然而，通过 <code>PathKeys</code> 设置能提供免除淘汰豁免权的可能影响到执行计划最终形成！
+执行核心针对比较淘汰程序运算前加入了针对特型特征比判：检查对比两者中拥有包容覆盖状态判别对比过程（涉及逻辑功能调用在 <code>pathkeys_contained_in</code> 执行预演）。</p>
+<p><strong>保护淘汰运算推演案例机制参考</strong>：</p>
 <ul>
-<li>路径 A 候选：采用了一套笨重到令人发指的 SeqScan 自己全强制做重排序，开机代价大、总跑算价高昂至上千万！但自带了飘扬顺气的 <code>pathkeys = (t1.uid)</code> 序列大旗。</li>
-<li>路径 B：一条能让算力尖叫绝世闪电的 Hash Join 超短通。起步快，全跑完不过区区大几千的消耗！但其身如恶兽全无秩序，<code>pathkeys == NIL</code>。</li>
+<li>设在路线 A 生成过程由于选取采用了非常低端低速重工处理代价总评分耗计算评差极不可取的分析报告但其中自持有与最后生成所需求目标相一致符合要求提供的顺序规律序列附带特征记录 <code>pathkeys = (...)</code> 标记。</li>
+<li>相向产生路线 B 作为快速通过拥有耗量最低估测得分总花费占优报告评估表现可作为正常状态必优方案的获取推荐但附随报告没有任何排列规则次序附征（<code>pathkeys == NIL</code>）。</li>
 </ul>
-<p>在没有神圣豁免的高维排序非闭包界中，这路 A 小丑绝必立刻暴死；新贵 B 将扫平一切！
-但！在 PG 那深不可测的总决策眼界里，如果裁断虽然感觉 A 烂如破泥，<strong>但是它顶头上那副全维的列旗却死超囊括了那光秃和残旧的 B 所全不配所有的法度红利。</strong> 哪怕 A 的纸面耗费远高千倍估算成本线，PG 的主引擎手此时都会赫然插进力保：活拉下这面破 A 强行封卷！并永作存档列留进那最重要的预备大底座。</p>
-<p><strong>最高中枢为何要苦保下流之列？</strong>
-因为中枢老辣深沉，在那远不见底的高顶组装关隘，它可能遭遇十重极度变态的 <code>Merge Join</code> 强令，更甚至撞见最冷酷杀神终极底符 —— <code>LIMIT 1</code>。</p>
-<p>在极端灭顶的洪荒恶劣要求下。那个自持着武功第一极速猛飙全图却无次序的 Hash Join，为了强硬生拼全图结果以抗排期对局，甚至会被逼到去开启巨型外部破落磁盘暂存归排而令总价飙出百合千万计而炸穿。
-反观那被上帝强保下这带好顺行秩序之破胎分支 A！在瞬满交接关斩停下 <code>LIMIT 1</code> 诉求那一刻。凭那极其超前精准拿对序列之完美契合并极速掐流神力直接砍停，瞬间封神！
-通过此一层维向特比的神来保护局体系法道，奠基于 PostgreSQL 历经数十载依然傲立于星空云端王者之无上统治地位！</p>
+<p>若在平时基础单纯按耗分标准评估流程势必当场剔去路线 A。
+不过若判断若能使用上携带特带序列属性（免做另外运算需求），而在主计划查询里存在像 <code>MERGE</code> 以及类似最后卡断 <code>LIMIT</code> 限值要求的极特殊对需要特性支持下，能不用后续执行大量重新提取转储组合就可以马上得到特供顺序列完成反馈结果对于此情况拥有巨大提升优势下优化决策系统为了保存对大类特殊处理能力可能强制插标挽留这条从总代价评估表面数据看似非常没必要存在的特殊类型。这就保留了各种可能性供最后的顶端调度执行者可以得到有充足应对针对解决要求指令执行优化调度选择途径预留的重要基盘配置机制体制保证。</p>
 <div style="break-before: page; page-break-before: always;"></div>
-<h1 id="选择率与代价引擎的数学基座-selectivity--cost-model"><a class="header" href="#选择率与代价引擎的数学基座-selectivity--cost-model">选择率与代价引擎的数学基座 (Selectivity &amp; Cost Model)</a></h1>
-<p>如果说执行器节点 (Executor Nodes) 是在战场上冲锋陷阵的铁血部队，那么 PostgreSQL 核心的 <strong>代价基调引擎 (Cost-Based Optimizer, CBO)</strong> 就是在这之前于作战统帅部里进行图上千百次沙盘推演的灵魂中枢。
-它一切的生杀予夺衡量指北，全部依托于两个底层基石机制：<strong>选择率预估 (Selectivity)</strong> 猜测系统会返回多少行数据，以及 <strong>代价计量 (Cost Model)</strong> 折算出这批数据在磁盘和内存中将会耗费多少系统滴答。</p>
-<p>在 PG 18.1 中，这套左右引擎命脉的公式算法与核心常数，沉睡于 <code>src/backend/optimizer/path/costsize.c</code> 与 <code>src/backend/utils/adt/selfuncs.c</code>。
-本文将穿越表象，带你深入这个堪称统计学与经验法相互融合的魔幻中枢。</p>
+<h1 id="选择率与代价评估模型-selectivity--cost-model"><a class="header" href="#选择率与代价评估模型-selectivity--cost-model">选择率与代价评估模型 (Selectivity &amp; Cost Model)</a></h1>
+<p>如果说执行器节点 (Executor Nodes) 是底层查询运算的载体，那么在到达该环节之前，<strong>代价规划引擎 (Cost-Based Optimizer, CBO)</strong> 则负责预测哪种策略执行最高效。
+代价优化的评估基础建立在两大要素之上：<strong>选择率测算 (Selectivity)</strong>（预估各分支过滤条件操作会截取保留多少行数记录）与<strong>代价值估算 (Cost Model)</strong>（推演出此执行策略将会发生计算和读写的资源占有开销评估）。</p>
+<p>在 PG 18.1 代码架构中，核心计算逻辑与相关设定常数放置于 <code>src/backend/optimizer/path/costsize.c</code> 与 <code>src/backend/utils/adt/selfuncs.c</code> 等模块中。
+本文将剖析这两个维度的具体原理。</p>
 <hr>
-<h2 id="1-统计学透视选择率-selectivity-的精准测写"><a class="header" href="#1-统计学透视选择率-selectivity-的精准测写">1. 统计学透视：选择率 (Selectivity) 的精准测写</a></h2>
-<p>所谓 Selectivity (简写为 sel)，是一个介于 <code>0.0</code> 到 <code>1.0</code> 之间的浮点数，它表示绝命的“卡口率”，允许全表百分之多少记录透射过去。
-计算 <code>sel</code> 的一切前提，都基建于 <code>ANALYZE</code> 命令收集并写入到 <code>pg_statistic</code> 表中的系统元数据。</p>
-<h3 id="11-单列特征mcv-与直方图的双峰分布"><a class="header" href="#11-单列特征mcv-与直方图的双峰分布">1.1 单列特征：MCV 与直方图的双峰分布</a></h3>
-<p>现实世界业务库的数据通常符合长尾和聚集极化（如某平台大多数用户年龄 25 左右，夹杂极少的 18 和 50）。
-在 <code>selfuncs.c</code> 里处理操作符如 <code>col = 'A'</code> 时：</p>
+<h2 id="1-对记录过滤占比率的预估选择率-selectivity"><a class="header" href="#1-对记录过滤占比率的预估选择率-selectivity">1. 对记录过滤占比率的预估：选择率 (Selectivity)</a></h2>
+<p>选择率 (Selectivity，简写为 sel)，是一个介于 <code>0.0</code> 到 <code>1.0</code> 之间的浮点数。其表征了对应过滤操作最终能使得全表中所占比重的记录存活下来的概率比例。
+针对 <code>sel</code> 分数的演算推导，需要提取在 <code>ANALYZE</code> 操作执行时向系统配置表 <code>pg_statistic</code> 所记录汇编录入的有关元数据信息作依据。</p>
+<h3 id="11-依据字段数据分布分析最常值与直方图推导"><a class="header" href="#11-依据字段数据分布分析最常值与直方图推导">1.1 依据字段数据分布分析：最常值与直方图推导</a></h3>
+<p>实际业务中的不同分布记录值常常呈现有倾向特征的分散度（存在极值、大量集中常态特征值）。
+由于分布的不一致性，当在 <code>selfuncs.c</code> 面临对例如 <code>=</code> 查询以及范围查询处理中：</p>
 <ul>
-<li>系统首先去查目标列的 <strong>MCV (Most Common Values) 高频词表</strong>数组。如果查到 <code>'A'</code> 就在此处，会直接精准地抽出记录好的频率（可能占 32%）作为 <code>sel</code>。</li>
-<li>如果是 <code>col &gt; 100</code> 这样的带域检索，MCV 就捉襟见肘了。系统转而启用 <strong>Histogram Bounds (直方图切面界限)</strong>。PG 将排序好的表数据强行切分为数百个均等记录数的“桶 (Bucket)”。通过线性插值法探测 <code>100</code> 横跨了几个桶，积分计算精确 <code>sel</code>。</li>
-<li>最后还要叠加一个 <code>Null Fraction (空值率)</code>，直接扣掉 NULL 的占比作为基础衰减。</li>
+<li>当条件为等值（如 <code>col = 'A'</code>），模型优先提取查看基于分析的 <strong>MCV (Most Common Values) 高频率常值表</strong>中是否存在映射并读取其发生占比作为参考准尺，来计算 <code>sel</code> 参数的基础预值。</li>
+<li>若需求涉及到特定跨度比界检查（如 <code>col &gt; 100</code>），评估器则利用记载构建的 <strong>Histogram Bounds (直方图切面界限统计组)</strong>。利用在采集录库时对整个存储区做等量行阶划片桶 (Bucket)，系统在此基于截面数据跨多桶的幅度结合计算得出更吻和实际范围数量波动的相对推测预值。</li>
+<li>数据推算流程中将涉及针对字段预留标记 <code>Null Fraction (空值发生率)</code> 等数值做出先占减项削峰系数作为基本校平调节预处理。</li>
 </ul>
-<h3 id="12-维度的灾难与破局扩展统计信息-extended-statistics"><a class="header" href="#12-维度的灾难与破局扩展统计信息-extended-statistics">1.2 维度的灾难与破局：扩展统计信息 (Extended Statistics)</a></h3>
-<p>在代码侧集中于 <code>clauselist_selectivity()</code> 的连乘会带来缺陷盲区。
-比如用户写 <code>WHERE city = 'Beijing' AND country = 'China'</code>。传统的概率计算遵循<strong>特征独立假设</strong>，默认这两个条件不相关。
-查表得知：<code>city='Beijing'</code> 的 <code>sel = 0.05</code>，而 <code>country='China'</code> 的 <code>sel = 0.2</code>。
-如果引擎采用朴素的 <code>sel_total = 0.05 * 0.2 = 0.01</code> 瞎乘算法，就会得出极其扭曲的结果，以至于被诱导选出孱弱错误计划分支。殊不知北京必定属于中国这二者拥有强绑定聚集概率！</p>
-<p>为了挽救这种维度塌缩，PostgreSQL 引入了跨列的 <code>CREATE STATISTICS</code> 模块救场。当你为 <code>(city, country)</code> 建立扩展高维相关性依赖 (Dependencies) 后。系统就会在连乘前判定联动关联，打破“相互独立”的连乘魔咒，挽救底层评估树的坍塌偏斜。</p>
+<h3 id="12-高维度复杂推算处理扩展统计信息支持-extended-statistics"><a class="header" href="#12-高维度复杂推算处理扩展统计信息支持-extended-statistics">1.2 高维度复杂推算处理：扩展统计信息支持 (Extended Statistics)</a></h3>
+<p>当系统面对拥有多种约束特例相互重载过滤情况之时（主要是在 <code>clauselist_selectivity()</code> 被激活下连串运算中），常出现盲区限制。
+由于统计运算的默认推算方式依赖的是<strong>特征信息独立判断定理</strong>，在推估条件如 <code>WHERE city = 'Beijing' AND country = 'China'</code> 时，在传统基础模型预查算值后若二者的预估值为 <code>sel = 0.05</code> 和 <code>sel = 0.2</code> 并按常规采用相乘（乘积估 <code>0.01</code>），则因两约束数据实际具备着极高度客观存在重合捆绑的归属发生特征而导致推衍值出现了荒谬严重偏离。</p>
+<p>为矫正这种模型灾难计算缺失，PostgreSQL 提供建立跨列关系的 <code>CREATE STATISTICS</code> 手段。当相关表的约束参数 <code>(city, country)</code> 定义构建相关性 (Dependencies) 验证，在合并前进行判定分析介入纠偏影响连乘的无关联偏差推算误差。</p>
 <hr>
-<h2 id="2-代价模型-cost-model-的双轨评议机制"><a class="header" href="#2-代价模型-cost-model-的双轨评议机制">2. 代价模型 (Cost Model) 的双轨评议机制</a></h2>
-<p>如果你查看 <code>EXPLAIN</code> 输出，永远会面对类似 <code>cost=10.00..1050.25</code> 两个用下划线相连接的神奇数值。
-这代表着优化器世界基于双轨维度的账面计算法：<strong>启动代价 (Startup Cost) 与 总代价 (Total Cost)</strong>。</p>
-<h3 id="21-平行维度的角力"><a class="header" href="#21-平行维度的角力">2.1 平行维度的角力</a></h3>
-<p>由于不同特征压榨，PG 对任何一条候选 Path 都在这两个账本上同时算分。</p>
+<h2 id="2-引擎代价值计量-cost-model-的评议参考机制"><a class="header" href="#2-引擎代价值计量-cost-model-的评议参考机制">2. 引擎代价值计量 (Cost Model) 的评议参考机制</a></h2>
+<p>系统所通过类似 <code>EXPLAIN</code> 工具体现出来含有 <code>cost=10.00..1050.25</code> 等带有起止分层标注数字标识的结果，正是反映着 PostgreSQL 代价计算器里基于双轨度量方式考量分析系统运算量的计算体系构成：<strong>启动代价 (Startup Cost) 与 总代开销 (Total Cost)</strong>。</p>
+<h3 id="21-平行考量评估维系"><a class="header" href="#21-平行考量评估维系">2.1 平行考量评估维系</a></h3>
+<p>为了使得针对系统运行路径组合存在特例下推决策影响评估更全面精准，对一条生成的备用 Path 的这两份参数数据采取分别留库登记。</p>
 <ul>
 <li>
-<p><strong>Startup Cost (初始启动沉没代价)</strong>：吐出<strong>第一行目标数据前</strong>，算子需要憋气阻塞筹备花去的时钟值。
-比如 <code>SeqScan</code> 启动代价为 0。但 <code>HashJoin</code> 发车极长！你外表得等内表慢吞吞把几百万记录翻完并在内存建好桶池完毕后，才能下发外表探针撞线，因此启动代价巨大。</p>
+<p><strong>Startup Cost (初始启动沉没代价)</strong>：即在能通过算子接口吐出<strong>第一行合规匹配目标条目记录前</strong>所需的耗费处理状态准备代价。
+通常例如 <code>SeqScan</code> 因为不用对初始资源处理拥有代价为 <code>0</code> 的优异启动效率，但是像 <code>HashJoin</code> 需面对耗费大量的初始扫表查储空间运算创建内存树哈希构建才能下投使用所以此期间被核算认定代价开销沉重。</p>
 </li>
 <li>
-<p><strong>Total Cost (总代价)</strong>：完完整整把所有数据发完、关闭管口所需要的总耗。
-<code>SeqScan</code> 哪怕只要一条也是全盘扫去碰，总价极高。</p>
+<p><strong>Total Cost (总执行代价值)</strong>：从起初接入至处理到结尾将完全的管辖内容全部输送清理关闭连接整体累计产生的所有耗时代号计量结果。
+如走无脑全部物理检索的 <code>SeqScan</code> 虽然开道平滑但是最终因为完全处理大存量耗用系统导致终计总分过分庞高。</p>
 </li>
 </ul>
-<p>双轨博弈在于，如果上级传进来了 <code>LIMIT 1</code>。代价函数在汇总结算最优解时，权柄会疯狂倾向于低 Startup Cost 的算子。即使它的 Total 极难看也会果断采纳，以此规避诸如大排序大哈希表建造的愚蠢行径。</p>
-<h3 id="22-操控大局的因子-magic-numbers"><a class="header" href="#22-操控大局的因子-magic-numbers">2.2 操控大局的因子 (Magic Numbers)</a></h3>
-<p>一切 Cost 都是计算浮点值。放缩的源头，来自 <code>costsize.c</code> 中被写死并允许重置的 GUC 常量参数，这是所有高端 DBA 进行魔改调参的圣地。</p>
+<p>在具备数量截取限制语法要求时，引擎会调整参数选择考量重心到偏向于选择低 StartUp 配置算子策略为主优先级别，即使该全段 Total 数据预值差劣依然会被采取纳入。</p>
+<h3 id="22-常量配置调整"><a class="header" href="#22-常量配置调整">2.2 常量配置调整</a></h3>
+<p>具体反映换算为浮点运算计分的代价数其根节点受 <code>costsize.c</code> 系列的常量设置管控来协调偏靠权重，并暴露用以使得调教能够随实际环境匹配更迭而变换。</p>
 <ul>
-<li><code>seq_page_cost = 1.0</code> (默认)：顺序读取一块 8KB 磁盘耗时被定义为基本黄金单位 1.0。</li>
-<li><code>random_page_cost = 4.0</code> (默认)：标志发生磁头跳步的随机磁盘检索，因寻道通常比顺读大 4 倍以上。这就是为什么明明有索引，系统却嫌弃随机读太分散而果断放弃走全表扫的终极阀门！在全 SSD 时代，高玩通常会将其砍至 <code>1.1</code> 逼迫系统疯狂走查索引。</li>
-<li><code>cpu_tuple_cost = 0.01</code> 与 <code>cpu_operator_cost = 0.0025</code>：标志 CPU 脑运算一条 <code>WHERE</code> 等内存操作相比于捞磁盘（耗费 1.0）有多么轻如鸿毛。</li>
+<li><code>seq_page_cost = 1.0</code>：将连续存取盘读取的 8KB 数据单做计算 1.0 参考核标基石量价度尺度基线参考码。</li>
+<li><code>random_page_cost = 4.0</code> (默认参数配置)：对应对于寻向定位存在磁片跳转的不具备连续规律性质查取所作代价增加开销因子系数，反映相对于物理磁寻向高付出成本体现。（故在搭载全高配置固态检索环境中调整削平拉相于 1.0 等价以使得分析更多选用依靠离散检阅索引查列进行加速性能挖掘）。</li>
+<li><code>cpu_tuple_cost</code> / <code>cpu_operator_cost</code> 等针对系统中央微处理器运控计算单命令操作相比盘处理损占比定义系常规定项。</li>
 </ul>
 <hr>
-<h2 id="3-代价决断前线核心算子估算探秘"><a class="header" href="#3-代价决断前线核心算子估算探秘">3. 代价决断前线：核心算子估算探秘</a></h2>
-<p>在知悉参数之后，去 <code>costsize.c</code> 看看具体算法究竟是如何拨账的。</p>
-<h3 id="31-扫表的代价cost_seqscan-vs-cost_indexscan"><a class="header" href="#31-扫表的代价cost_seqscan-vs-cost_indexscan">3.1 扫表的代价：<code>cost_seqscan</code> vs <code>cost_indexscan</code></a></h3>
-<p>这是每天被系统狂暴触发千万次的基石结算。</p>
+<h2 id="3-具体算子的开销评估逻辑"><a class="header" href="#3-具体算子的开销评估逻辑">3. 具体算子的开销评估逻辑</a></h2>
+<p>结合上面提及的参数因子指标，我们介绍在 <code>costsize.c</code> 中，各种底层基础执行规划运算的费用估计评析核标。</p>
+<h3 id="31-索引调用选择比较cost_seqscan-相对立-cost_indexscan-面向差别"><a class="header" href="#31-索引调用选择比较cost_seqscan-相对立-cost_indexscan-面向差别">3.1 索引调用选择比较：<code>cost_seqscan</code> 相对立 <code>cost_indexscan</code> 面向差别</a></h3>
+<p>基础评估节点里使用极为常见的评估对比算法策略。</p>
 <ul>
 <li>
-<p><strong>对于全表扫 (<code>cost_seqscan</code>)</strong>：
-公式直白粗暴：<code>总代价 = (目标表总 Page 数 * seq_page_cost) + (行数 * cpu_tuple_cost) + ...</code></p>
+<p><strong>全表读取运算评估 (<code>cost_seqscan</code>)</strong>：
+在核算评估执行此步策略估值上其算式简单直接且不加掩饰通过计算公式体现 <code>(总共需拉取得该对应表数据所关联分配使用盘段 Page 数 * seq_page_cost) + (对应需经检测评估判定数据总体行量预计数 * cpu_tuple_cost) + (...)</code> 来直算。</p>
 </li>
 <li>
-<p><strong>对于索引扫 (<code>cost_indexscan</code>)</strong>：
-这里极其反人类。索引树一旦跑起来去拿原据，是非常恐怖离散化的跳跃。
-如果表物理存放长期因增删改导致碎片四散（<code>Correlation 相关性</code> 趋近 0），只管强走索引拿十万记录，那就是在掀起十万昂贵物理跳变。<code>random_page_cost</code> 能把算盘直接敲出几千万成本。
-但此时代码绝不死板，<code>cost_index</code> 中潜藏着平滑预测公式曲线，去估测那些已存于缓存池内的块并猛力往下折压分数，以免走入纯全栈封禁绝路。</p>
+<p><strong>利用索引读取 (<code>cost_indexscan</code>)</strong>：
+若被检索评估所用的是该物理存储长期发生频繁修改更迭而呈碎片无章凌乱的分布存放在硬盘中，因为存在连续不断的查找跳转取位回盘索引（基于数据排列表内 <code>Correlation (对应关联排序契合关联特性)</code> 取值低且不匹配时），因强涉及调借离散磁盘索引读回源查找所以使用 <code>random_page_cost</code> 计算可能得出非常不具备使用吸引估值开销评分导致丢选作废的劣选项。优化计算逻辑模块通过预测在运存空间缓存覆盖保留机率占比下调整缓减分数来协调修正由于完全依照死计算导致优良辅助结构被掩埋排阻出路可能性错误。</p>
 </li>
 </ul>
-<h3 id="32-兵家之要的关联大决斗代价"><a class="header" href="#32-兵家之要的关联大决斗代价">3.2 兵家之要的关联大决斗代价</a></h3>
+<h3 id="32-典型连接动作产生的估算代价差别说明"><a class="header" href="#32-典型连接动作产生的估算代价差别说明">3.2 典型连接动作产生的估算代价差别说明</a></h3>
+<p>不同的底层运作结构原理产生代价算子对评估打分结果反馈截然相反情况。</p>
 <ul>
 <li>
-<p><strong>Nested Loop Join (<code>cost_nestloop</code>)</strong>：
-计算方式无情恐怖：让 <code>左表循环总数据</code> 去硬全额<strong>连乘积</strong> <code>右内层单次查代</code>！
-外层十万条，里层只是绝底的极小花费 <code>50</code>。连加也是巨震之价。但这全赖其 <code>Startup</code> 近 0 的绝杀奇点令它能稳抗高压存活。</p>
+<p><strong>嵌套查询联合比评算子 (<code>cost_nestloop</code>)</strong>：
+基于它的基础驱动是双次遍历交乘特点，所以对其结算核对方式反映了 <code>驱动层循环计算获取查询估定条列结果数值</code> 去对 <code>受指认被发配匹配目标层核算生成操作运行耗当代价</code> 进行完全连叠加总。因为对 <code>Startup</code> 起点不被额外耗阻牵绊的核素加持得以让它的计算虽然在庞大量积重盘面体现差值但是在极端控制下（如查询上限 <code>LIMIT</code> 控制提取或者小量内推查）其最终分数核算反能具有出牌反压战神出位优越评价。</p>
 </li>
 <li>
-<p><strong>Hash Join (<code>cost_hashjoin</code>)</strong>：
-深沉点聚焦在于最开端 <code>Startup</code> 构建期。
-算法要计算内表有多聚盘、砸多大 CPU <code>cpu_operator_cost</code> 去装填至工作内存 <code>work_mem</code>。
-要命的极其分差于此，一旦系统查获了 <code>work_mem</code> 给得小器容不下全漏。算力会在极其平纯原加里生添一只消耗命极高的罚价：<code>disk spill penalty（刷盘巨大惩罚开销）</code>！让多盘狂读拉起极高 <code>Total</code> 总耗。向最上层示警，从而逼向退避并触发它线连接路全保生天。</p>
+<p><strong>计算哈希查对联合的估值逻辑 (<code>cost_hashjoin</code>)</strong>：
+该核算模式极大评估计分权重分配沉淀于其使用运行期的始初构造加载时。需要在内部评估算法上对执行内部建图构建使用 <code>work_mem</code> 的工作耗用配置占比进行盘分算权预评，以及假如数据预查发现在限定可用运量工作缓存存限额中发现不保使用范围将对多重读写额外盘记录临时寄存产生极高度昂的由于 <code>缓存刷盘代价罚项（disk spill penalty）</code> 参数拉压引值从而警报给顶端中枢系统抛除防止因为采用不合法环境参数配置导致执行出现堵断挂载拖库隐患事件情况发生的自我规避自救方案决策保障设定。</p>
 </li>
 </ul>
-<p>经过成百上千次精密节点评估积累，PG 优化的王牌引擎得以从数百纠缠网里，斩钉截铁不差分毫断那向绝通往之绝胜黄金大通道长路。</p>
 
                     </main>
 

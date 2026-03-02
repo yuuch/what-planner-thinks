@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-d878a88c.js";
+            window.path_to_searchindex_js = "../searchindex-e22076fb.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-55afa917.js"></script>
@@ -174,51 +174,56 @@
 
                 <div id="mdbook-content" class="content">
                     <main>
-                        <h1 id="查询树的预处理"><a class="header" href="#查询树的预处理">查询树的预处理</a></h1>
-<p>在 PostgreSQL 优化器（Planner）接收到解析和重写后的查询树（Query Tree）以后，第一步并非直接开始路径搜索，而是通过 <code>subquery_planner()</code> 函数进行一系列复杂的预处理。预处理的核心目标是消除查询中的冗余结构、展开嵌套，并对表达式进行规范化和简化，从而为后续的 <code>grouping_planner()</code> 和 <code>query_planner()</code> 减轻负担，提供尽可能扁平化和易于优化的结构。</p>
-<p>以下内容基于 PostgreSQL 18.1 源码（<code>src/backend/optimizer/plan/planner.c</code> 中的 <code>subquery_planner</code>）详细解析查询树预处理的各个核心阶段。</p>
-<h2 id="1-cte-与底层结构展开"><a class="header" href="#1-cte-与底层结构展开">1. CTE 与底层结构展开</a></h2>
-<p>在真正进入表达式级别的预处理之前，优化器必须先把从属的查询块或语法结构给“铺平”。</p>
+                        <h1 id="查询树的预处理-query-tree-preprocessing"><a class="header" href="#查询树的预处理-query-tree-preprocessing">查询树的预处理 (Query Tree Preprocessing)</a></h1>
+<p>当 PostgreSQL 优化器接收到解析和重写完毕的查询树（Query Tree）后，首先会通过 <code>subquery_planner()</code> 函数进行预处理。
+预处理的主要目的是简化查询树，消除冗余结构并尽可能展平嵌套。系统会将复杂的表达式简化并规范化，从而为后续负责处理连接逻辑的 <code>grouping_planner()</code> 与 <code>query_planner()</code> 提供更清晰、扁平的基础结构。</p>
+<p>以下内容结合 PostgreSQL 18.1 源码（核心逻辑位于 <code>src/backend/optimizer/plan/planner.c</code> 中的 <code>subquery_planner</code>），介绍查询树预处理的几个核心步骤。</p>
+<hr>
+<h2 id="1-cte-与子查询的处理"><a class="header" href="#1-cte-与子查询的处理">1. CTE 与子查询的处理</a></h2>
+<p>在处理具体表达式之前，优化器需要先将查询块和子句展开。</p>
 <ul>
-<li><strong>处理 WITH 语句 (CTE)</strong>: 调用 <code>SS_process_ctes</code>。如果 CTE 可以被内联（Inline），则将其展开为 <code>RTE_SUBQUERY</code>；否则构建出 InitPlan 级别的 SubPlan，以便在主查询执行前计算完毕。</li>
-<li><strong>补全空 FROM 子句</strong>: 通过 <code>replace_empty_jointree</code>。如果查询没有 <code>FROM</code>（如 <code>SELECT 1</code>），优化器会人为挂载一个 Dummy 的 <code>RTE_RESULT</code> 节点，统一后续的 JoinTree 处理逻辑。</li>
-<li><strong>SubLink 的显式提升 (ANY/EXISTS)</strong>: 调用 <code>pull_up_sublinks</code>。将 <code>WHERE</code> 或者 <code>JOIN/ON</code> 里面涉及 <code>ANY</code> / <code>EXISTS</code> 的相关子查询（SubLinks）尽早转化为半连接（Semi-Join）或反连接（Anti-Join）。</li>
-<li><strong>子查询扁平化 (Subquery Pull-up)</strong>: 调用 <code>pull_up_subqueries</code>。如果 <code>FROM</code> 子句中直接写了普通的简单子查询，系统会尝试将其合并到当前查询层级，消除不必要的嵌套。</li>
-<li><strong>UNION ALL 的扁平化</strong>: 遇到简单的 <code>UNION ALL</code>，调用 <code>flatten_simple_union_all</code> 将其重写为并列的追加关系 <code>appendrel</code>，避免复杂的集合操作开销。</li>
+<li><strong>处理 WITH 语句 (CTE)</strong>: 系统首先调用 <code>SS_process_ctes</code>。如果 CTE 满足内联（Inline）条件，优化器会将其展开并转化为普通的 <code>RTE_SUBQUERY</code>；如果不满足内联条件，则会为其单独生成 InitPlan 级别的 SubPlan，确保它在主查询执行前计算完毕。</li>
+<li><strong>补全 FROM 子句</strong>: 通过 <code>replace_empty_jointree</code> 函数处理没有 <code>FROM</code> 子句的查询（例如 <code>SELECT 1</code>）。优化器会为其挂载一个基础的 <code>RTE_RESULT</code> 节点，以便后续统一使用标准的连表 (JoinTree) 算法。</li>
+<li><strong>SubLink (子引用) 提升 (ANY/EXISTS)</strong>: 调用 <code>pull_up_sublinks</code>，将位于 <code>WHERE</code> 或 <code>JOIN/ON</code> 条件中的 <code>ANY</code> / <code>EXISTS</code> 等子查询提取出来，并尝试转化为半连接（Semi-Join）或反连接（Anti-Join）。</li>
+<li><strong>子查询扁平化 (Subquery Pull-up)</strong>: 调用 <code>pull_up_subqueries</code>，尝试将 <code>FROM</code> 子句中基础的子查询与当前查询层级融合，减少查询嵌套层级。</li>
+<li><strong>UNION ALL 展开</strong>: 遇到简单的 <code>UNION ALL</code> 时，优化器调用 <code>flatten_simple_union_all</code> 将其解构为平铺的追加关系（<code>appendrel</code>），从而避免复杂的集合操作开销。</li>
 </ul>
-<h2 id="2-rte-rangetableentry-预处理"><a class="header" href="#2-rte-rangetableentry-预处理">2. RTE (RangeTableEntry) 预处理</a></h2>
-<p>RangeTable 维护了查询涉及的所有表、视图、函数。</p>
+<hr>
+<h2 id="2-关系表范围-rte-处理"><a class="header" href="#2-关系表范围-rte-处理">2. 关系表范围 (RTE) 处理</a></h2>
+<p>RangeTable 记录了查询涉及的所有表、视图及函数。</p>
 <ul>
-<li><strong>函数 RTE 内联与常量化</strong>: <code>preprocess_function_rtes</code> 针对 <code>FROM</code> 子句中的函数进行计算。如果是简单的常数化函数，直接得出结果；如果有机会，则像展开视图一样将函数展开（Inline）。</li>
-<li><strong>虚拟生成列展开</strong>: <code>expand_virtual_generated_columns</code> 会扫描所有的表，将查询内涉及到 Generated Columns 的 <code>Var</code> 引用直接替换为其背后的计算表达式，方便一并在后续步骤被折叠。</li>
+<li><strong>函数 RTE 内联与常量化</strong>: <code>preprocess_function_rtes</code> 负责处理 <code>FROM</code> 子句中的函数。如果函数不包含变量且为常量计算，系统会直接计算其结果；如果符合内联展开条件，则将其函数体展开并并入主查询。</li>
+<li><strong>虚拟生成列的展开</strong>: <code>expand_virtual_generated_columns</code> 会对表进行排查。当发现查询中引用了生成列（Generated Columns 的 <code>Var</code> 引用）时，优化器会用其背后的计算表达式进行替换，以方便后续的表达式化简。</li>
 </ul>
-<h2 id="3-表达式预处理阶段-preprocess_expression"><a class="header" href="#3-表达式预处理阶段-preprocess_expression">3. 表达式预处理阶段 (preprocess_expression)</a></h2>
-<p>这是预处理代码块中占篇幅最大、也最为细腻的一环。系统不仅要处理 <code>WHERE</code> 里的条件，还要将 <code>TargetList</code>、<code>HAVING</code>、<code>LIMIT</code> 及 <code>ON CONFLICT</code> 等各处的表达式利用 <code>preprocess_expression()</code> 统统洗一遍。核心动作包括：</p>
-<h3 id="31-连接别名展开-join-alias-variables-flattening"><a class="header" href="#31-连接别名展开-join-alias-variables-flattening">3.1 连接别名展开 (Join Alias Variables Flattening)</a></h3>
-<p>通过 <code>flatten_join_alias_vars</code>，优化器将由于 <code>JOIN ... USING</code> 或自然连接引发的连接别名变量，替换为来自底层基表的原始列（<code>Var</code> 引用）。这确保后续的优化只需要面对最底层的真实列名。</p>
+<hr>
+<h2 id="3-表达式预处理-preprocess_expression"><a class="header" href="#3-表达式预处理-preprocess_expression">3. 表达式预处理 (preprocess_expression)</a></h2>
+<p>预处理阶段的核心步骤之一，是对 <code>TargetList</code>、<code>WHERE</code>、<code>HAVING</code>、<code>LIMIT</code> 和 <code>ON CONFLICT</code> 等各个部分的表达式调用 <code>preprocess_expression()</code> 进行规范化处理。其核心操作包括：</p>
+<h3 id="31-连接别名还原-join-alias-variables-flattening"><a class="header" href="#31-连接别名还原-join-alias-variables-flattening">3.1 连接别名还原 (Join Alias Variables Flattening)</a></h3>
+<p>通过 <code>flatten_join_alias_vars</code>，优化器会将因为使用了 <code>JOIN ... USING</code> 或自然连接所产生的连接别名变量，替换回它们在底层基础表中的原始列名引用（底层的 <code>Var</code> 引用）。这保证了后续的优化逻辑只需处理物理表字段。</p>
 <h3 id="32-常量折叠-constant-folding"><a class="header" href="#32-常量折叠-constant-folding">3.2 常量折叠 (Constant Folding)</a></h3>
-<p>调用核心函数 <code>eval_const_expressions</code>。
-不仅会将 <code>1 + 1</code> 化简为 <code>2</code>，还能对各种内部函数的常量输入进行预计算（前提是函数为 Immutable）。重要的是，它会压平嵌套的 <code>AND/OR</code>（将 <code>AND (A, AND(B, C))</code> 变成 <code>AND(A, B, C)</code>）以保持逻辑树平坦。</p>
-<h3 id="33-条件标准化-canonicalize-qual"><a class="header" href="#33-条件标准化-canonicalize-qual">3.3 条件标准化 (Canonicalize Qual)</a></h3>
-<p>利用 <code>canonicalize_qual</code> 函数，如果表达式是一个布尔条件（如 <code>WHERE</code> 里的项），它会尝试做一定的范式转化（比如尽力将其拉平或者排查明显的互斥矛盾）。</p>
-<h3 id="34-剩余-sublink-转换与外层变量绑定"><a class="header" href="#34-剩余-sublink-转换与外层变量绑定">3.4 剩余 SubLink 转换与外层变量绑定</a></h3>
+<p>调用核心化简函数 <code>eval_const_expressions</code>。
+该函数除了计算简单的常量算术外，还会对内置稳定函数（Immutable Function）的常量输入进行提早计算。此外，它能将深层嵌套的条件进行扁平化处理，如将 <code>AND (A, AND(B, C))</code> 展平为 <code>AND(A, B, C)</code>。</p>
+<h3 id="33-条件范式化-canonicalize-qual"><a class="header" href="#33-条件范式化-canonicalize-qual">3.3 条件范式化 (Canonicalize Qual)</a></h3>
+<p>经由 <code>canonicalize_qual</code> 函数，系统会对布尔条件（例如 <code>WHERE</code> 限定项）进行逻辑层面的范式转换，展平表达式并排查其中可能存在的互斥或冗余条件。</p>
+<h3 id="34-杂项-sublink-转换与变量绑定"><a class="header" href="#34-杂项-sublink-转换与变量绑定">3.4 杂项 SubLink 转换与变量绑定</a></h3>
 <ul>
-<li>经过 <code>pull_up_sublinks</code> 还没解决的杂项子链接（如出现在 <code>SELECT</code> 目标列里的标量子查询），在此被包装成 <code>SubPlan</code>。</li>
-<li><code>SS_replace_correlation_vars</code> 会找出对上层查询列的引用，并使用 <code>Param</code>（参数）进行绑定，使得父子查询产生实质的数据关联参数。</li>
-<li>最后对于 <code>WHERE</code> / <code>HAVING</code> 的顶层条件，调用 <code>make_ands_implicit</code> 退化为 Implicit-AND 的 <code>List</code> 结构存放，不再采用显式的 <code>BoolExpr</code>。</li>
+<li>针对之前 <code>pull_up_sublinks</code> 阶段未能处理的子查询（例如出现在 <code>SELECT</code> 目标列集合中的标量子查询），会在此处转换为 <code>SubPlan</code> 操作符。</li>
+<li><code>SS_replace_correlation_vars</code> 会查找子查询中对上层父查询变量的引用，并使用 <code>Param</code>（参数）将其绑定，建立父子查询之间的数据依赖关系。</li>
+<li>最终，对于 <code>WHERE</code> 和 <code>HAVING</code> 顶层的条件判断，系统会调用 <code>make_ands_implicit</code> 剥除显式的 <code>BoolExpr</code> 包装，将其转换为隐式的 <code>Implicit-AND</code> 链表结构。</li>
 </ul>
+<hr>
 <h2 id="4-后期合并与结构修正"><a class="header" href="#4-后期合并与结构修正">4. 后期合并与结构修正</a></h2>
-<p>经过表达式洗刷后，<code>subquery_planner</code> 在交付给 <code>grouping_planner</code> 之前会做最后的清理。</p>
+<p>在表达式处理完毕后，<code>subquery_planner</code> 还会进行一些清理操作，然后再将查询树交给 <code>grouping_planner</code>。</p>
 <ul>
-<li><strong>HAVING 下推为 WHERE</strong>: 这是经典的优化手段。系统会扫描 <code>HAVING</code> 子句，寻找那些不包含聚合函数、不包含易变函数（Volatile Function）并且不需要等到空分组集产生结果的过滤条件（例如 <code>HAVING col = 1</code>）。这些被认为是退化的聚合后过滤，系统会将其克隆或移动到 <code>WHERE</code> 列表中，从而在进入 <code>Aggregate</code> 算子之前尽早淘汰无关数据。</li>
-<li><strong>外连接消除 (Outer Join Elimination)</strong>: 调用 <code>reduce_outer_joins</code>。因为上一步各种 <code>WHERE</code> 表达式已经被处理，这一步系统会检查如果存在 <code>WHERE</code> 强约束要求某空侧列非空（比如 <code>LEFT JOIN B ON ... WHERE B.id &gt; 10</code>），此时原本的 <code>LEFT JOIN</code> 已经失去保留 null 侧的意义，该外连接会被安全地降级成 <code>INNER JOIN</code>。</li>
-<li><strong>剔除无用的 Result RTE</strong>: 调用 <code>remove_useless_result_rtes</code>。前面补充的或中间产生的不再起实质作用的 Dummy 关联在此被扫地出门。</li>
+<li><strong>HAVING 转化为 WHERE</strong>: 系统会检查 <code>HAVING</code> 子句中的条件。如果发现其中不包含聚合函数，也不含易失函数（Volatile Function），系统会将其移动或复制到 <code>WHERE</code> 子句中去（例如单纯的 <code>HAVING col = 1</code>）。这样可以在进入代价较高的 <code>Aggregate</code> 分组算子之前提早过滤数据。</li>
+<li><strong>外连接消除 (Outer Join Elimination)</strong>: 通过调用 <code>reduce_outer_joins</code>。由于之前的步骤化简了 <code>WHERE</code> 表达式，系统会检查是否有 <code>WHERE</code> 条件要求由于 LEFT/RIGHT JOIN 产生的 NULL 值为非空（例如 <code>LEFT JOIN B ON ... WHERE B.id &gt; 10</code>）。如果存在这样的严格限制条件，这个外连接就可以被安全降级为执行效率更高的 <code>INNER JOIN</code>。</li>
+<li><strong>移除无用 Result RTE</strong>: 最后调用 <code>remove_useless_result_rtes</code>，清理前面步骤中产生的，但目前已经失去作用的冗余 <code>RTE_RESULT</code> 节点。</li>
 </ul>
-<p>至此，一个极其干净、扁平化且逻辑清晰的等价 Query Tree，才会正式交给 <code>grouping_planner</code>。</p>
-<h2 id="源码入口"><a class="header" href="#源码入口">源码入口</a></h2>
+<p>经过预处理阶段的优化后，查询树被转换为更扁平、逻辑结构更清晰的形式，随后传递给 <code>grouping_planner</code> 继续后续优化。</p>
+<hr>
+<h2 id="源码参考"><a class="header" href="#源码参考">源码参考</a></h2>
 <ul>
-<li><code>src/backend/optimizer/plan/planner.c</code>: <code>standard_planner</code> -&gt; <code>subquery_planner</code></li>
-<li>该逻辑作为第一阶段的总览，其余各子项优化详情，请查看侧边栏对应小节。</li>
+<li><strong>核心逻辑位置</strong>：<code>src/backend/optimizer/plan/planner.c</code> 中的 <code>standard_planner</code> -&gt; <code>subquery_planner</code>。</li>
 </ul>
 
                     </main>

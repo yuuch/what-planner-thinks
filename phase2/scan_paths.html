@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-d878a88c.js";
+            window.path_to_searchindex_js = "../searchindex-e22076fb.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-55afa917.js"></script>
@@ -174,99 +174,86 @@
 
                 <div id="mdbook-content" class="content">
                     <main>
-                        <h1 id="单表扫描大军的集结-access-paths"><a class="header" href="#单表扫描大军的集结-access-paths">单表扫描大军的集结 (Access Paths)</a></h1>
-<p>在 PostgreSQL 查询优化的漫长征途中，一旦查询树（Query Tree）熬过了逻辑重写、子查询提升、表达式扁平化以及外联结斩除等一系列严酷的预处理洗礼，规划器（Planner）便会正式拔剑，跨入整个数据库引擎最核心、也最见真章的战场——<strong>基于代价的优化阶段（Cost-Based Optimization, CBO）</strong>。</p>
-<p>代价优化的第一落子，也是构筑整棵物理执行大树的绝对基石，便是要为查询里牵涉到的每一个基础门派（Base Relation，即基表），推演出所有能走的通的<strong>单表访问路径（Single Relation Access Paths）</strong>。在这个环节下，不管是笨重的全表顺序扫描、花样百出的各类索引奇兵，还是火力全开的并行扫荡模式，都会被事无巨细地拉到明面上排兵布阵，只待后续的打分淘汰与拼表大检阅。</p>
-<p>本章节将结合 PostgreSQL 18.1 的滚烫源码（主战区在 <code>src/backend/optimizer/path/allpaths.c</code> 和 <code>indxpath.c</code>），带你深度潜入这套单表扫描路径的生成罗盘与暗含的数据兵法。</p>
+                        <h1 id="单表扫描路径生成-access-paths"><a class="header" href="#单表扫描路径生成-access-paths">单表扫描路径生成 (Access Paths)</a></h1>
+<p>在 PostgreSQL 的查询优化流程中，当查询树完成了逻辑重写、子查询提升、表达式扁平化及外连接消除等预处理步骤后，规划器（Planner）将进入基于代价的优化阶段（Cost-Based Optimization, CBO）。</p>
+<p>代价优化的首要任务，是为查询中涉及的每一个基表（Base Relation）计算可用的<strong>单表访问路径（Single Relation Access Paths）</strong>。在这个环节，无论是顺序扫描、索引扫描还是并行扫描，都会被枚举和评估，为后续的代价比较和表连接（Join）提供基础。</p>
+<p>本章结合 PostgreSQL 18.1 源码（主要位于 <code>src/backend/optimizer/path/allpaths.c</code> 和 <code>indxpath.c</code>），介绍单表扫描路径的生成机制及其数据结构。</p>
 <hr>
-<h2 id="1-大管家出面make_one_rel-的统筹"><a class="header" href="#1-大管家出面make_one_rel-的统筹">1. 大管家出面：<code>make_one_rel</code> 的统筹</a></h2>
-<p>生成基础路径的浩大工程，全权由核心大管家函数 <code>make_one_rel()</code>（盘驻于 <code>allpaths.c</code>）一手统筹。顾名思义，它最终的野望，是把查询里散落四方的所有表关系（Relations）像揉面团一样“揉合”成一个终极整体（One Rel），以此代表最终呼之欲出的查询结果。</p>
-<p>不过在此之前，它必须先给手底下每一个单独的基表发放武器，武装到牙齿。</p>
-<h3 id="11-两段式的谨慎拆解"><a class="header" href="#11-两段式的谨慎拆解">1.1 两段式的谨慎拆解</a></h3>
-<p>在 <code>make_one_rel</code> 的营房里，对单个基表的锤炼被极其考究地硬拆成了两大道工序：</p>
+<h2 id="1-扫描路径生成入口make_one_rel"><a class="header" href="#1-扫描路径生成入口make_one_rel">1. 扫描路径生成入口：<code>make_one_rel</code></a></h2>
+<p>生成基础路径的工作主要由 <code>make_one_rel()</code> 函数（位于 <code>allpaths.c</code>）统筹。它的最终目标是确定多表连接的最佳顺序，但在开始表连接之前，它必须先为每个基表生成访问路径。</p>
+<h3 id="11-两阶段生成机制"><a class="header" href="#11-两阶段生成机制">1.1 两阶段生成机制</a></h3>
+<p>在 <code>make_one_rel</code> 中，单个基表的路径生成分为两个主要阶段：</p>
 <ol>
-<li><strong>摸清家底 (<code>set_base_rel_sizes</code>)</strong>：这步纯干算盘活儿，先摸透估算出这表会吐出多少行（Rows）、身段有多宽（Width）等一系列统计学底牌。</li>
-<li><strong>铺设战道 (<code>set_base_rel_pathlists</code>)</strong>：手握上面算出的体量底牌后，真刀真枪地开始为其幻化出由磁盘吸出数据的各种物理道路（Path）。</li>
+<li><strong>估算规模 (<code>set_base_rel_sizes</code>)</strong>：首先估算该表的输出行数（Rows）和行宽（Width）等统计信息。</li>
+<li><strong>生成路径 (<code>set_base_rel_pathlists</code>)</strong>：结合上一步估计的规模，生成读取该表的物理路径（Path）。</li>
 </ol>
-<p><strong>为什么要搞得这么神经兮兮非得切分两阶段？</strong>
-这是因为后边那种大杀器——并行查询，以及极其贼溜的参数化路径，根本离不开对表体量的精准把脉！
-举个典型的例子，要是某个表单薄得很，几页纸就写完了，优化器在估算时就会毫不留情地给它按下一个<strong>拒绝开多线程的红印（Cancel consider_parallel）</strong>。如果边估算边筑路，很容易导致前面的路修歪了，错失掉获得全局精准判断或是横攀比对的千载良机。</p>
-<h3 id="12-reloptinfo情报的集大成容器"><a class="header" href="#12-reloptinfo情报的集大成容器">1.2 <code>RelOptInfo</code>：情报的集大成容器</a></h3>
-<p>在踏入筑路阶段时，每张基表、哪怕是合并后的中间态或是子查询，都会被极为隆重地封装进一个块头巨大且贯穿始终的情报中心结构体——<strong><code>RelOptInfo</code></strong>（Relation Optimization Info，定义于 <code>nodes/pathnodes.h</code> 这个大本营）。</p>
-<p>在这造路一战中，<code>RelOptInfo</code> 有几个命脉般的心腹字段：</p>
+<p><strong>分阶段的原因：</strong>
+这是因为并行查询和参数化路径的判定非常依赖对表规模的精确估计。例如，如果优化器在估算时发现一个表的数据量非常小，就会将 <code>consider_parallel</code> 标记为 false，从而跳过并行扫描的路径生成。分离规模估算和路径生成，可以为全局规划提供更准确的比对基准。</p>
+<h3 id="12-reloptinfo关系优化信息"><a class="header" href="#12-reloptinfo关系优化信息">1.2 <code>RelOptInfo</code>：关系优化信息</a></h3>
+<p>在规划阶段，每张基表（包括中间结果和子查询）都会被封装为一个重要的结构体——<strong><code>RelOptInfo</code></strong>（Relation Optimization Info，定义于 <code>nodes/pathnodes.h</code>）。</p>
+<p>在路径生成阶段，<code>RelOptInfo</code> 包含以下几个核心字段：</p>
 <ul>
-<li><strong><code>rows</code> / <code>reltarget</code></strong>: 死死捏着估算输出的基表行数和列宽指标，这俩直接咬死了随后所有扫描代价的喉咙。</li>
-<li><strong><code>baserestrictinfo</code></strong>: 也就是大家最为眼熟的 <code>WHERE</code> 过滤条件。在逻辑优化阶段，它们早就被肢解并隐式绑定成了带有 AND 血缘的约束限制表（<code>RestrictInfo</code> 的 List）。</li>
-<li><strong><code>pathlist</code></strong>: 这是一个命脉链表（List）。在这个档口，由 <code>set_base_rel_pathlists</code> 各种法术<strong>疯狂衍生出来的五花八门的扫描路径（Path）小队，都会乖乖在这里挂单报道</strong>。</li>
-<li><strong><code>cheapest_startup_path</code> / <code>cheapest_total_path</code></strong>: 当所有的跑法都被丢进沙盘试跑过后，优化器会极其功利地从中提拔出两位天选之子——<strong>拔脚开跑代价最小的</strong>和<strong>全盘跑完总折损最低的</strong>，将它俩当作“状元”被供奉缓存于此，以便日后随叫随到，快速入局。</li>
+<li><strong><code>rows</code> / <code>reltarget</code></strong>: 预估的输出行数和列宽，直接影响后续的扫描代价计算。</li>
+<li><strong><code>baserestrictinfo</code></strong>: 与当前表相关的 <code>WHERE</code> 过滤条件，已被解析为 <code>RestrictInfo</code> 构成的列表。</li>
+<li><strong><code>pathlist</code></strong>: 一个链表（List），存放由 <code>set_base_rel_pathlists</code> 生成的候选扫描路径（Path）。</li>
+<li><strong><code>cheapest_startup_path</code> / <code>cheapest_total_path</code></strong>: 记录了执行代价最低的两条评估结果——<strong>启动代价最小的路径</strong>和<strong>总代价最低的路径</strong>，它们会被缓存以便后续快速选用。</li>
 </ul>
 <hr>
-<h2 id="2-扫街派顺序全表扫描-sequential-scan-与群狼并行"><a class="header" href="#2-扫街派顺序全表扫描-sequential-scan-与群狼并行">2. 扫街派：顺序全表扫描 (Sequential Scan) 与群狼并行</a></h2>
-<p>顺序全表扫描（SeqScan），可以说是任何一棵基表在这个世上活下去的“最低兜底生命线”。就算你没建半个索引、就算代价高破天际，数据库也能硬着头皮，像推土机一样从硬盘上逐页刮尽全表，死抠出正确答案。</p>
-<p>在 <code>allpaths.c</code> 下属的 <code>set_plain_rel_pathlist</code> 行省里：</p>
-<h3 id="21-兜底路线create_seqscan_path"><a class="header" href="#21-兜底路线create_seqscan_path">2.1 兜底路线：<code>create_seqscan_path</code></a></h3>
-<p>优化器绝不废话，一上来就会塞入一条朴实无华的 <code>SeqScan</code> 路径：通过底层的 <code>add_path(rel, create_seqscan_path(root, rel, required_outer, 0))</code> 拍板钉钉。
-顺序扫描的物理直觉就是顺着堆表（Heap Table）的底层房客分布，从第一号房（Block 0）老老实实一直敲门敲到最后一位。</p>
+<h2 id="2-顺序扫描-sequential-scan-与并行扫描"><a class="header" href="#2-顺序扫描-sequential-scan-与并行扫描">2. 顺序扫描 (Sequential Scan) 与并行扫描</a></h2>
+<p>顺序全表扫描（SeqScan）是最基础的访问方式。当缺乏可用索引或索引代价过高时，数据库会通过遍历表的数据块来读取记录。</p>
+<p>在 <code>allpaths.c</code> 的 <code>set_plain_rel_pathlist</code> 函数中：</p>
+<h3 id="21-基础顺序扫描create_seqscan_path"><a class="header" href="#21-基础顺序扫描create_seqscan_path">2.1 基础顺序扫描：<code>create_seqscan_path</code></a></h3>
+<p>优化器默认会添加一条 <code>SeqScan</code> 路径：通过调用 <code>add_path(rel, create_seqscan_path(root, rel, required_outer, 0))</code> 实现。
+顺序扫描按照堆表（Heap Table）的物理存储顺序逐块读取。</p>
 <ul>
-<li><strong>代价勒索要素</strong>：这个推土机的油耗其实很好算——主要就看这表占了多少个地盘（<code>rel-&gt;pages</code>），这锁死了连续猛读的 I/O 车马费；其次看表里到底住了多少口人（<code>rel-&gt;rows</code> / CPU filtering），这决定了 CPU 小人每条拉出来检查对账的心力损耗。</li>
+<li><strong>代价组成</strong>：主要由表占用的页数（<code>rel-&gt;pages</code>）决定连续 I/O 的开销，其次由行数（<code>rel-&gt;rows</code>）决定 CPU 进行条件过滤的开销。</li>
 </ul>
-<h3 id="22-群狼撕咬并行化扫描-create_plain_partial_paths"><a class="header" href="#22-群狼撕咬并行化扫描-create_plain_partial_paths">2.2 群狼撕咬：并行化扫描 <code>create_plain_partial_paths</code></a></h3>
-<p>自从 PostgreSQL 点亮了查询并行化这棵科技树后，慢吞吞的 SeqScan 迎来了一位极具野性与暴力美学的孪生兄弟——<strong>部分顺序扫描（Partial Sequential Scan）</strong>。
-紧跟着推土机的脚印，优化器立马会凑上去盘算：</p>
+<h3 id="22-并行化扫描-create_plain_partial_paths"><a class="header" href="#22-并行化扫描-create_plain_partial_paths">2.2 并行化扫描 (<code>create_plain_partial_paths</code>)</a></h3>
+<p>在支持并行查询后，系统提供了<strong>部分顺序扫描（Partial Sequential Scan）</strong>。
+在添加了基础的顺序扫描之后，优化器会检查是否符合并行条件：</p>
 <pre><code class="language-c">if (rel-&gt;consider_parallel &amp;&amp; required_outer == NULL)
     create_plain_partial_paths(root, rel);
 </code></pre>
-<p>一钻进 <code>create_plain_partial_paths</code> 的窝里，系统立刻会吹哨喊来算账先生 <code>compute_parallel_worker()</code>。这先生会根据当前这张表的腰围体量，套用一系列晦涩的数学对数阈值，去精打细算出<strong>到底值不值得叫几个闲散的后台劳动力（Background Workers）过来一并上阵开撕</strong>。
-一旦拍板了打工人口数，就会调用 <code>add_partial_path</code> 分裂出一条挂着 <code>parallel_workers</code> 将军衔的分支战线。
-<em>需要特别点破的是：这里叫 partial (部分/残缺)，倒不是说大家各扫自家门前雪，而是这帮 worker 在底层共用一个抢块计数器，谁手快谁抢那个数据块，最后战果必须得汇总上交到最顶层的那个大太监 <code>Gather</code> 节点手里统一发落。</em></p>
+<p>如果条件允许，内部核心逻辑调用 <code>compute_parallel_worker()</code> 根据数据规模和相关阈值参数计算出需要启动的<strong>后台工作进程 (Background Workers)</strong> 数量。
+当决定并行执行后，系统会通过 <code>add_partial_path</code> 添加一条指定了 <code>parallel_workers</code> 的分支战线。多个 Worker 共享数据块分配游标，并发读取数据。</p>
 <hr>
-<h2 id="3-刺客信条索引扫描-index-paths-深度解密"><a class="header" href="#3-刺客信条索引扫描-index-paths-深度解密">3. 刺客信条：索引扫描 (Index Paths) 深度解密</a></h2>
-<p>如果只会大声喧哗地全盘推平，那显然不够高明。对于绝大多数的 OLTP 事务秒级响应，以及那种只打算在茫茫人海里揪出极个别目标（所谓的高选择性 High Selectivity）的任务，拔出 B-Tree 这种能让耗时呈断崖式跳水暴跌的索引匕首，才是正途。</p>
-<p>紧随其后，<code>set_plain_rel_pathlist</code> 便会推开 <code>indxpath.c</code> 里的刺客大堂——<code>create_index_paths()</code> 的暗门。这个函数的算计极深，它会如鬼魅般去尝试穷尽麾下所有的单柄短剑（单索引），甚至还有各种古怪的双剑合璧（Bitmap Scan 位图组合技）刺杀术。</p>
-<h3 id="31-经典重现-index-scan传统的单锋回马枪"><a class="header" href="#31-经典重现-index-scan传统的单锋回马枪">3.1 经典重现 <code>Index Scan</code>：传统的单锋回马枪</a></h3>
-<p>当它通过向导 <code>build_index_paths</code> 探到查询 <code>WHERE</code> 里塞的暗号（比方说 <code>id = 5</code>）能够正好和系统账簿上记录的某个剑客 <code>IndexOptInfo</code>（索引特长）对上眼时，就会干脆利落地产出一条标准的 <code>Index Scan Path</code>。</p>
-<p><strong>命中与反噬</strong>：
-普通的索引扫就算再准，哪怕它在聚簇树的枝繁叶茂间电光火石般锁死了 <code>id = 5</code> 的下落，并一把揪出了它的命门 <code>TID</code>（Tuple ID），它依旧逃脱不了一个极其狼狈的命运——它被迫还得使出一招<strong>回马枪（Heap Fetch 回表）</strong>。它得顺着 TID 原路杀回堆表（Heap）的数据块里，把那条血淋淋的记录全须全尾地生拽上来。因为只有这样，它才能去接着核对那些没上索引的附属条件（比如 <code>name = 'pg'</code>) 到底还不合规矩。</p>
-<h3 id="32-刺客的巅峰体验-index-only-scanvm-辅佐下的无影手"><a class="header" href="#32-刺客的巅峰体验-index-only-scanvm-辅佐下的无影手">3.2 刺客的巅峰体验 <code>Index Only Scan</code>：VM 辅佐下的无影手</a></h3>
-<p>但这毕竟太跌份了，于是 <code>build_index_paths</code> 还会暗自推演一招极其优美的变种武学。
-如果在很多情况下，你的 SQL 写得十分干净利落，你只要取的首级部位，正好全在那把索引的剑鞘上刻着呢（比如只写了 <code>SELECT id FROM table WHERE id = 5</code>）。在这种如有神助的覆盖索引（Covering Index）梦幻情境下，刺客其实<strong>压根就不需要，也绝对不应该</strong>再回头去去翻那种又脏又沉的堆表黑块（Heap Page）。</p>
-<p><strong>致命破绽与 VM 面纱（Visibility Map）</strong>：
-然而理想很丰满，PG 的并发世界很骨感。PG 死磕着那套经典的多版本并发控制（MVCC），而且极其偏执地把死活状态版本号跟数据本体绑在一起。这意味着，就算你只用揪出索引键，你也没法光凭索引拍胸脯保证这行记录如今在这个时空快照里**是不是已经是一具腐臭的死尸（Dead Tuple）**了，或者是不是还处于某个隐秘在途事务的庇护下对你不可见——因为所有的生死簿印记（<code>xmin</code>、<code>xmax</code>）全藏在堆表地底下的 Header 标头里，索引条目上光溜溜的什么提示都没有！
-为了能练成这套不用回表的无影手 <code>Index Only Scan</code> 盖世神功，PG 给索引扫配备了一张通灵卷轴——<strong>VM（Visibility Map，可见性监控网）</strong>。
-在 <code>create_index_paths</code> 权衡利弊时，会赶紧偷瞟一眼目标表所在的那个内存块在 VM 里的明灯位：只有当该块上记录着所有人都是清白干净的 <code>all-visible</code>（意味着这个块最近没有陷入在跑其他肮脏事务的纷争泥潭，绝对可以放行），优化器底气才硬，敢于放手免去那恶心的 Heap Fetch 回源操作。要不然，哪怕你要的渣子全在索引上，优化器也得乖乖加上回表耗损的巨额账单比重，甚至直接将其打回冷宫退化成平庸普通的 Index Scan。</p>
-<h3 id="33-魔武双修-bitmap-indexheap-scan-位图连招扫描"><a class="header" href="#33-魔武双修-bitmap-indexheap-scan-位图连招扫描">3.3 魔武双修 <code>Bitmap Index/Heap Scan</code> (位图连招扫描)</a></h3>
-<p>假使哪天碰上了不按套路出牌的主儿，你的 <code>WHERE</code> 里给出的不是一刀切的标靶，而是撒网式的范围扫，或者甚至祭出了 <code>OR</code> 将好几个不同的字段索引用法强行糅杂在一起呢（类似 <code>WHERE age = 20 OR salary &gt; 8000</code>）？</p>
-<p>这时候不管派哪个单一的 <code>IndexScan</code> 上场，它都会因为要在不同的索引老巢间疲于奔命而带来灾难性、令人崩溃的随机 I/O 操作狂潮 （Random I/O）。于是优化器一拍脑门，搞出了一套及其妖孽的二面绞杀战法——<strong>位图扫描大阵（Bitmap Scan）</strong>。
-在 <code>indxpath.c</code> 的阵眼深处，全权交由 <code>generate_bitmap_or_paths</code> 来主理发落。</p>
+<h2 id="3-索引扫描-index-paths-机制解析"><a class="header" href="#3-索引扫描-index-paths-机制解析">3. 索引扫描 (Index Paths) 机制解析</a></h2>
+<p>对于需要高选择性过滤（High Selectivity）的查询，B-Tree 等索引能显著减少数据读取量，从而提升查询效率。
+在 <code>set_plain_rel_pathlist</code> 之后，系统调用 <code>indxpath.c</code> 中的 <code>create_index_paths()</code>，生成多种基于索引的候选路径。</p>
+<h3 id="31-index-scan标准的索引扫描"><a class="header" href="#31-index-scan标准的索引扫描">3.1 <code>Index Scan</code>：标准的索引扫描</a></h3>
+<p>当查询的 <code>WHERE</code> 条件与某个建立的索引 (<code>IndexOptInfo</code>) 匹配时，<code>build_index_paths</code> 会生成一条 <code>Index Scan Path</code>。</p>
+<p><strong>回表 (Heap Fetch)</strong>：
+标准的索引扫描在找到符合条件的索引条目和目标 <code>TID</code>（Tuple ID）后，仍需要回表读取堆表（Heap）中的实际记录块，以提取 SELECT 所需的其他列数据及进行多版本可见性（MVCC）的判断。</p>
+<h3 id="32-index-only-scan覆盖索引与可见性映射"><a class="header" href="#32-index-only-scan覆盖索引与可见性映射">3.2 <code>Index Only Scan</code>：覆盖索引与可见性映射</a></h3>
+<p>如果查询的目标列完全被索引覆盖（如 <code>SELECT id FROM table WHERE id = 5</code>），则可能不需要回表读取。</p>
+<p><strong>MVCC 挑战与 VM (Visibility Map) 设计</strong>：
+由于 PostgreSQL 在 MVCC 机制下，通过表记录的标头 (<code>xmin</code>, <code>xmax</code>) 来判断事务可见性，索引条目本身通常不包含可见性信息。
+为了减少回表开销，PostgreSQL 使用了 <strong>VM (Visibility Map，可见性映射文件)</strong>。在考虑 <code>Index Only Scan</code> 时，只有当 VM 标记对应数据块为 <code>all-visible</code> （即该块中的所有数据对所有活跃事务清晰可见）时，查询此时可以直接使用索引数据而跳过回表，进一步降低代价。</p>
+<h3 id="33-bitmap-indexheap-scan-位图扫描"><a class="header" href="#33-bitmap-indexheap-scan-位图扫描">3.3 <code>Bitmap Index/Heap Scan</code> (位图扫描)</a></h3>
+<p>当查询包含多个涉及不同索引的条件，或者使用 <code>OR</code> 和 <code>IN</code> 等查询模式时，独立的 <code>IndexScan</code> 在频繁回表时可能带来大量的随机 I/O (Random I/O) 操作。为此，系统采用了**位图扫描（Bitmap Scan）**方案。在 <code>indxpath.c</code> 中，主要由 <code>generate_bitmap_or_paths</code> 处理。</p>
 <ul>
-<li><strong>上半场: 潜龙在渊 <code>Bitmap Index Scan</code></strong>：先让各路刺客按兵不动，绝对不许碰真表数据一根毫毛。这帮家伙仅仅是钻进那些不同的索引树洞里各自疯狂刺探。一旦对上了号，就在自个儿拉起的一个内存虚拟大方阵里（通常是按物理 Page 级别划分的长布阵），把这行对应的站位标识符（Bit 标志位）点亮成嚣张的满血全变位 <code>1</code>。</li>
-<li>妙就妙在这里，如果这两个门派的活儿是 <code>AND</code> 交集或 <code>OR</code> 并集的关系，因为弄回来的全都是干干净净的纯纯内存比特黑白点阵，在内存大军中原地进行**按位与、按位或操作（BitmapAnd / BitmapOr）**那速度直叫一个快如闪电，合并过程丝滑得不可理喻。</li>
-<li><strong>下半场: 图穷匕见 <code>Bitmap Heap Scan</code></strong>：等到终于揉出最后一张硕大无比的手绘通缉 Bitmap 全图后，再全副武装拿着这张终极名录杀向真表据点。因为这次是严格顺着物理块的序列号地址，一路平推过去只敲亮着 <code>1</code> 的门。这一手直接将可怕的随机四散冲击，生生化骨绵掌般转化为极其优雅且无害的<strong>准顺序连续读取 (Sequential IO) 降维打击</strong>！从而极其体面地把原本成千上万碎玻璃片般的磁盘寻道消耗抹杀殆尽。这是一门极其蕴藏大智慧的镇派神功。</li>
-</ul>
-<p><strong>唯一的代价与硬伤</strong>：既然 Bitmap Heap Scan 是生拼硬凑靠物理排座位找过去的，那它吐出来的 Record 人潮当然全无当初那种“依山傍水天然的键值序列美感”。如果你老人家在上头还蛮横地强加了一手 <code>ORDER BY age</code>，那它将面对再也调借不出现成有序气场的尴尬境界，被逼出原形，迫使上层主管含泪自掏腰包，强行祭出那死慢死慢的内存 <code>Sort</code> 节点重新排队。</p>
-<hr>
-<h2 id="4-千丝万缕的伏笔参数化路径-parameterized-paths-的精妙借力"><a class="header" href="#4-千丝万缕的伏笔参数化路径-parameterized-paths-的精妙借力">4. 千丝万缕的伏笔：参数化路径 (Parameterized Paths) 的精妙借力</a></h2>
-<p>刚才说的那堆寻常手段，多半只有闭门造车看看自家 <code>baserestrictinfo</code> 的时候才顶用。可你不要忘了，PostgreSQL 在下盘做战略推演的时候，眼光向来毒辣且超前，它老早就已经在做大名鼎鼎、且极其恶心的**嵌套循环大乱斗（Nestloop Join）**的最坏打算了！</p>
-<p>你试想这么一场修罗场：大表 A 跟小表 B 狭路相逢，硬来了一句 <code>A JOIN B ON A.val = B.id</code>。
-在这场厮杀里，要是小表 B 命苦被当成天天被翻牌子的那个被驱动内表，如果优化器只给它配了一把干干瘪瘪不带配件的扫描破枪，那不管老大 A 丢什么砖头过来，可怜的 B 全得从头扫到尾复读机一遍，代价简直要撕裂苍穹！但如果我能在前面留个后门插槽，把 <code>A.val</code> 作为一个**传递在途流转的活动变量引子（Parameter）**硬塞到 B 表的肚子里，等 B 在底层掏枪（调用索引）之前就能做到拔得头筹前置过滤呢？</p>
-<ul>
-<li>在 PG 的黑话里头，这就叫神鬼莫测的<strong>参数化借力路径 (Parameterized Path)</strong>。</li>
-<li>在这个层面上，<code>PG</code> 优化器不惜血本引入了特制机关组件：<code>ParamPathInfo</code>（参数化信息引信）。在操刀 <code>create_index_paths</code> 斩荆披棘的时候，优化器绝不满足只顾生造出针对 B 表自身狭隘小圈子过滤的死路径；它还会“贼溜溜”地探出头去扒一眼总司令部的连接缓冲区账目，看一眼 B 迟早要跟外人媾和勾搭上时，能不能巧借东风，顺手牵羊用别人嘴里说出的那些等值交换条件，彻底激活 B 自带那把原本生着锈的牛逼索引屠龙刀！</li>
-<li>但凡有一丝丝机会，PG 就会连夜打造一套夹带了所谓 <code>lateral_relids</code>（暗语：该刺客必须要依靠哪些外界供养方势力撑腰）烙印的高阶变异索引奇袭扫荡方案。这种路径如果是脱离开外层单挑，它的单独执行存活可行性差到极点甚至是 <code>0</code>！但这玩意一旦融入外围庞大的 NestLoop 巨型战争绞肉机中，它绝对会摇身一变，成为以极低损耗力挽千军之战局的绝杀神兵！而现如今大火的 <code>LATERAL</code> 关键字旁支查询，正是借由这一神坛基座，才得以在表象大发异彩、耀武扬威的。</li>
+<li><strong>位图索引扫描 <code>Bitmap Index Scan</code></strong>：各个索引分支独立检索，且不立刻回拉真实数据，而是记录下符合条件的表块位点，在内存中形成一个按位标识（Bit）的图谱。</li>
+<li><strong>位图操作 <code>BitmapAnd</code> / <code>BitmapOr</code></strong>：通过对不同的索引结果图谱进行按位与、按位或操作，快速合并出最终的目标图谱。</li>
+<li><strong>位图堆表扫描 <code>Bitmap Heap Scan</code></strong>：根据合并后的位图结果，严格按照物理数据块地址的前后顺序去批量读取真表。这种方式将大量分散的随机读取转化为<strong>类似顺序读取的连续 I/O 查询</strong>，大幅减少了磁盘寻址时间。</li>
 </ul>
 <hr>
-<h2 id="5-最残忍的杀戮角斗局pruning-剪枝与-add_path-门神"><a class="header" href="#5-最残忍的杀戮角斗局pruning-剪枝与-add_path-门神">5. 最残忍的杀戮角斗局：Pruning 剪枝与 <code>add_path</code> 门神</a></h2>
-<p>历经了上头这一番狂轰滥炸式的头脑风暴，别以为只有惊世大查询才开枝散叶，这哪怕就是遇上了最普普通通的一只底层阿猫阿狗表，优化器都会为其凭空捏造出几十上百条奇拉八怪的奇特跑法路线 Path（有纯靠脚走的 SeqScan, 骑马的特指索引X, 坐轿的特指索引Y, 双人抬轿 Bitmap 组合花枪，还有群殴并行…）。</p>
-<p>要是一直这么任由它们子子孙孙无穷衍育下去，还没等最后真正两两大联表，光是那指数级膨炸出来的怪异连接组合数量（Path Explosion），就足以把机器的内存条活活吸干爆裂！所以，高高在上的主优化器必须时不时地举起屠刀清理门户，这就是血腥的——<strong>路径剪枝大逃杀（Path Pruning）</strong>。</p>
-<p>那些被妄想出的不管好的坏的成百上千条扫描捷径，绝不会平白无故就被拉到名册 <code>RelOptInfo-&gt;pathlist</code> 队伍里头滥竽充数混饭吃。所有角色统统必须先排着队，去会一会那唯一掌控着生杀大权的镇派老门神：极其无情的过滤审判函数 <strong><code>add_path(RelOptInfo *parent_rel, Path *new_path)</code></strong>。</p>
-<p><code>add_path</code> 躯体里深埋着一条类似于帕累托最优（Pareto Optimality）那般极其现实主义的丛林淘汰碾压法则。
-当某个怀揣着美梦的新生代 Path 来敲门想求录用挂单入册时，门神会拎着它的领子，把它跟 <code>pathlist</code> 门下那些早就占好席位的老骨头们展开一对一绝不留情的贴身死斗考核：</p>
+<h2 id="4-参数化路径-parameterized-paths-的运用"><a class="header" href="#4-参数化路径-parameterized-paths-的运用">4. 参数化路径 (Parameterized Paths) 的运用</a></h2>
+<p>在评估基表的访问路径时，PostgreSQL 能够前瞻多表连接（主要是嵌套循环连接 NestLoop Join）在实际执行时的需求。</p>
+<p>当大表 A 和小表 B 进行连接（如 <code>A JOIN B ON A.val = B.id</code>）时，若 B 作为被驱动的内表，可能会根据 A的每一行重复扫描全表。此时如果将关联条件（如 <code>A.val</code>）作为一个**在途传输参数（Parameter）**下移到 B 的扫描阶段，B 可以利用此参数在读取前提前应用索引过滤。</p>
+<ul>
+<li>在 PostgreSQL 术语中，这称为<strong>参数化借力路径 (Parameterized Path)</strong>。</li>
+<li>系统通过构造 <code>ParamPathInfo</code>（参数化信息），并在 <code>create_index_paths</code> 时生成不仅依赖自身 <code>WHERE</code> 条件、还依赖于外部关系过滤项的索引路径。这种设计虽然自身执行的可行性取决于外部条件，但在被 <code>NestLoop Join</code> 采纳后，可以大幅降低连接运算的全局代价。</li>
+</ul>
+<hr>
+<h2 id="5-路径剪枝-path-pruning-与-add_path-函数"><a class="header" href="#5-路径剪枝-path-pruning-与-add_path-函数">5. 路径剪枝 (Path Pruning) 与 <code>add_path</code> 函数</a></h2>
+<p>由于一条 SQL 可能会为每个基表生成多达几十条不同的扫描路径（如不同索引的单查、组合位图扫、并行等），如果全部保留它们将导致多表连接组合时发生指数级路径爆炸（Path Explosion）。为此，优化器采取了**路径剪枝（Path Pruning）**策略。</p>
+<p>所有的候选扫描路径都会通过统一的函数入口进行过滤校验：<strong><code>add_path(RelOptInfo *parent_rel, Path *new_path)</code></strong>。</p>
+<p><code>add_path</code> 会比较新路径和 <code>pathlist</code> 中现有的旧路径，评估是否保留新传入的路径：</p>
 <ol>
-<li><strong>赤裸裸的价码拼杀（Cost Fudge 模糊裁决）</strong>：门神会对比它俩起步开跑的消耗代价（<code>startup_cost</code>，也就是为了先吐出头一行能拿来应付限流 Limit 的启动预热花销）和跑到头的死磕总消耗（<code>total_cost</code>）。如果新来的选手两腿沉重，这俩盘条数值都输得死死地高于某个早就稳坐名录上的老混混。那不管怎么看你这新兵蛋子也就全是缺点一无是处了，门神当场将其拉走人道毁灭。（当然，在这个修罗场里 PG 非常细心地引入了极为微观大约在 <code>1e-10</code> 这等毫末级别的模糊缓冲乘数 <code>fuzz</code>，就是为了防着碰上了因为破烂浮点数对齐舍入那种让人无语的误差而被判冤死的情况发生）。</li>
-<li><strong>身带免死金牌的高等爵位排序特征 (Pathkeys) <strong>：这是 PG Planner 非常精妙、甚至是惊艳全场的一个反转后门大绝杀！万一出现了这么个局：新人初来乍到，新造的路子总消耗巨大看面相简直必死无疑。但是老路子弄出来的结果却是一盘毫无规律的粗暴散沙乱炖。而此新人路线（因为碰巧走了按键值生长的老牌 B-Tree 名门望族索引），这打娘胎里带出来的结果恰好完美迎合且对路了上一层长官急需的 <code>ORDER BY</code> 天生排序序列（自带光芒万丈的 <code>pathkeys</code> 特质）！
-这下门神可绝</strong>不敢单凭那一手账面上的烂开销就擅作主张把它给踢出局了</strong>！因为这新人相当于自带了军团极需的高阶战略免检福利，它为老东家提早绕开了跑到上头还要极其恶劣地外挂开辟巨无霸独立排序内存（那些恐怖的明文显式大 Sort 死结关卡）而变相立下战功，扭转乾坤！此时它非但不用死，更将被作为高贵的特型种子选手与老路径平起平坐被<strong>全数并存破格录用保留</strong>入军团名册里。</li>
+<li><strong>按代价修剪（Cost Fudge 裁决）</strong>：该函数会对新路径和已有路径的起步代价（<code>startup_cost</code>）与总消耗代价（<code>total_cost</code>）进行比较。如果一条新路径在启动代价和总代价上都显著高于现有的某条路径，则该新路径被认为劣势明显，将被直接淘汰。系统在比较时引入了一个极小比例（如 <code>fuzz</code> 系数<code>1e-10</code>级别）的缓冲乘数来忽略微小的舍入误差。</li>
+<li><strong>受排序属性影响的特例 (Pathkeys 的保护)</strong>：当一条新路径因为执行效率稍慢，原本要被淘汰，但它附带的输出特征恰好满足了全局必要的排序序列（即具备 <code>pathkeys</code> 排序特质，如依靠 B-Tree 生成的顺序）时，它有可能不会被直接剔除。预先排好序的路径在后续的 <code>ORDER BY</code> 或 <code>Merge Join</code> 中可以免除巨大的重新排序开销，因此 <code>add_path</code> 将会根据排序价值对其通融和保留。</li>
 </ol>
-<p>等最终肃清淘汰干净了那些里外各个层面（既拼不过出场穷尽血量、又拿不出半点特殊高阶花招特质收益）全部都一无是处的杂鱼淘汰品以后，留在那个历经千锤百炼战火洗过的神圣 <code>rel-&gt;pathlist</code> 名录金牌榜里的，就只是一批高度提纯过的、压缩了最恐怖底盘潜力与精血的至高扫描路径结晶战尊们了。它们都在各自摩拳擦掌蓄势待发，只等在随后那波诡云谲连环拼表的 Join 洗礼大战中掀起属于自己的最终腥风血雨！</p>
+<p>经过 <code>add_path</code> 严格的层层淘汰后，<code>RelOptInfo-&gt;pathlist</code> 列表中最终只保存了在各个性能维度下最具竞争力的少数几条扫描路径，这大大提升了优化器在后续关联查询排布阶段的处理效率。</p>
 
                     </main>
 

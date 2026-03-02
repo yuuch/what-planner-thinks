@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-d878a88c.js";
+            window.path_to_searchindex_js = "../searchindex-e22076fb.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-55afa917.js"></script>
@@ -174,75 +174,66 @@
 
                 <div id="mdbook-content" class="content">
                     <main>
-                        <h1 id="路径序列与排序核心密码-pathkeys"><a class="header" href="#路径序列与排序核心密码-pathkeys">路径序列与排序核心密码 (PathKeys)</a></h1>
-<p>几乎所有关于性能优化的面试题，最后都会绕回一个命题：“为什么加了索引，ORDER BY 或 GROUP BY 变快了？”
-在执行引擎的表象逻辑看来似乎是常理，但如果要在拥有极大复杂组合的 PostgreSQL 代价优化内核（CBO）中完美统一地实现这一机制，就需要一种能够<strong>统一度量并且伴随路径推演任意流转的通用通货</strong>。</p>
-<p>在 PG 18.1 中，这套跨越所有的关系代数操作、用来锚定和流转排序特征通货，名叫 <strong><code>PathKey</code> (路径键)</strong>。相关代码的核心座落于 <code>src/include/nodes/pathnodes.h</code> 和 <code>src/backend/optimizer/path/pathkeys.c</code>。
-不懂 <code>PathKeys</code> 的设计与传播机理，你就无法真正看懂优化器在 <code>add_path</code> 里做出的那些惊心动魄的剪枝取舍。为何某些代价极高的“破烂”执行计划，反而会在复杂查询的最后关头被 PG 奉为至宝？</p>
+                        <h1 id="路径输出排序属性特征体系-pathkeys"><a class="header" href="#路径输出排序属性特征体系-pathkeys">路径输出排序属性特征体系 (PathKeys)</a></h1>
+<p>在关系型数据库对查询计划进行筛选比对时，往往不仅需要考量不同分支下执行路径的运行时间代价成本大小，还要将其运行输出流天然带附序列顺序的特征与查询语义中涉及的需要有序操作动作结构加以考虑比较。</p>
+<p>为了满足这个功能设计需求并在整个执行优化器内部不同分析计算层位提供可以统一标识并继承转递评价标准标称凭证，PostgreSQL 代价优化内核（CBO）抽象总结出来了一个通用性特设结构组件体系——<strong><code>PathKey</code> (路径排序键特性体系)</strong>。
+本系列逻辑底层基准结构构筑存储实现定义核心在相关代码中存放与 <code>src/include/nodes/pathnodes.h</code> 和关联函数计算操作支持等位于 <code>src/backend/optimizer/path/pathkeys.c</code> 源码区域。掌握 <code>PathKeys</code> 能够帮助理解优化器如何规避冗余的排序节点。</p>
 <hr>
-<h2 id="1-结构起底什么是-pathkey"><a class="header" href="#1-结构起底什么是-pathkey">1. 结构起底：什么是 PathKey？</a></h2>
-<p>优化器在评估物理路径（比如一次走索引的扫描、或者哈希连接）时，不仅看“花了多大 Cost”、“能吐多少 Rows”，还必须精确标注出这股数据流<strong>携带的元素排序特征</strong>。</p>
-<p>这套特征在源码中由 <code>List *pathkeys</code>（链表）承载。其基础粒子组件 <code>PathKey</code> 如下：</p>
+<h2 id="1-原型原理分析pathkey-结构"><a class="header" href="#1-原型原理分析pathkey-结构">1. 原型原理分析：PathKey 结构</a></h2>
+<p>优化引擎调度分析路径在核标物理算子生成模型效能时（比如涉及 B 树等索引查询读取、或是合并联合连接操作结果产生），通过分析标记此查询分支将返回处理流的数据，将所包含具备可描述排列规范要素等附加给定的关联标记组装构成序列供上层判定。</p>
+<p>在代码体现和实际存算中依赖 <code>List *pathkeys</code>（指针链表结构组织）。它本身单个组件抽象节点数据框架为：</p>
 <pre><code class="language-c">typedef struct PathKey
 {
     NodeTag     type;
-    EquivalenceClass *pk_eclass;   /* 极其震撼：它不指向具体的列，而是指向一个覆盖全部域的等价类！ */
-    Oid         pk_opfamily;       /* 排序操作符族 (如 B-tree opfamily OID)，指定排序规则 */
-    int         pk_strategy;       /* 升序 ASC 还是 降序 DESC */
-    bool        pk_nulls_first;    /* NULL 值是悬浮最前还是垫底 */
+    EquivalenceClass *pk_eclass;   /* 关联向所抽象映射其全表征相连域对应的等价类对象群组实体 */
+    Oid         pk_opfamily;       /* 表示限定规定所适用执行对比规范的操作符组别 (如 B 树关联 OID 等类型规定设定)，指派此序排序基本规矩规则 */
+    int         pk_strategy;       /* 限定此路向对应的输出规则：比如为升序向上递进 ASC 和 降向退减顺排的 DESC */
+    bool        pk_nulls_first;    /* 配置有空置数据标识记录 Null 悬置顶位起始呈现排列特性或是顺推退后归档后随落底 */
 } PathKey;
 </code></pre>
-<h3 id="11-为什么主体必须包裹-equivalenceclass"><a class="header" href="#11-为什么主体必须包裹-equivalenceclass">1.1 为什么主体必须包裹 <code>EquivalenceClass</code>？</a></h3>
-<p>在上一个附录《等价类 (EC)》中埋下过伏笔：PG 极度高超的设计使得 <code>PathKey</code> 的最核心属性 <code>pk_eclass</code> 直接硬链接在了 <code>EquivalenceClass</code> 上。</p>
-<p>试想场景：<code>SELECT t2.info FROM t1 JOIN t2 ON t1.id = t2.uid ORDER BY t2.uid;</code>
-在优化器构建最底层时，系统发现 <code>t1</code> 表的 <code>id</code> 有 B-Tree 索引。于是探索出极速路径 <code>IndexScan(t1)</code>。这条底层路生成的初始 <code>pathkeys</code> 护照上骄傲地写着：“我送出的源头数据是严格基于 <code>EquivalenceClass{t1.id, t2.uid}</code> 排序的！”</p>
-<p>当数据流抵达上层、需要执行全局决算的 <code>ORDER BY t2.uid</code> 时：
-假若当年仅仅用字符串列名映射作为载体（如：<code>pk_var = t1.id</code>），那么顶层节点拿起客户要求的 <code>t2.uid</code> 一碰：“天啊，底层是 t1.id，客官要的是 t2.uid，给我退回！” 于是迫使几百万数据强行扔进 <code>Sort</code> 内存重排栈，引发算力海啸。</p>
-<p><strong>但是</strong>，正因为 PG 的 <code>PathKey</code> 绑死的是极度抽象化的等价类！
-顶端审判官只需拿 <code>t2.uid</code> 代表的 EC 句柄，和底层的那个 EC 指针一碰。刹那间同气连枝完美吻合 (那正是因为 <code>t1.id = t2.uid</code>，起初就被合二为一)。判定官放行，极其平滑地帮引擎省切掉了最昂贵的重排局！</p>
+<h3 id="11-与-equivalenceclass-的关键结合"><a class="header" href="#11-与-equivalenceclass-的关键结合">1.1 与 <code>EquivalenceClass</code> 的关键结合</a></h3>
+<p>PostgreSQL 在架构时并没有简单地将此记录映射至单个列数据标记而是采用使用更顶层抽象地指向到等价类集体系架构操作——即将核心关键指标 <code>pk_eclass</code> 直接定指向链接关系在了某指定提取生成关联的 <code>EquivalenceClass</code>。</p>
+<p>针对此类架构情况说明：执行如 <code>SELECT t2.info FROM t1 JOIN t2 ON t1.id = t2.uid ORDER BY t2.uid;</code>。
+在初期底层路径评估分析构建时期如果确认对于 <code>t1表的id列</code> 使用索引扫描构建取得优执行访问效率提取路径 <code>IndexScan(t1)</code> 后。此时这条产生在底线的查询将为其生成赋立其输出带有针对源字段排向能力宣告背书的说明属性集合，标记此查对获取具有等同在建立关于 <code>EquivalenceClass{t1.id, t2.uid}</code> 为基础之上的规则排序。</p>
+<p>而向查询执行层级汇流至规划高位运算处理全局要求排序 <code>ORDER BY t2.uid</code> 需要下传校验提取符合自己判定标准结果组序路径支系时：
+若是简单以最初物理名称绑定例如用原 <code>t1.id</code> 对接比比验证 <code>t2.uid</code>，则在语义判别发生由于字面映射偏差引发被判作不能等视对待错误拦截（此操作容易引起被迫推选代价开销更大的通用数据堆栈 <code>Sort</code> 进行资源耗损排序流程处理）。
+由于 <code>PathKey</code> 的比标采用指由等价族做为标识符句柄关联验证方法。最终判断仅判断由底层提供指派上送数据关联 <code>t1.id</code> 对应挂名其名下主位指针是否和由执行要求的 <code>t2.uid</code> 主控同受相同的相等逻辑簇即可直接得到判定结果完美配对重叠验证结果吻合有效。大大减少不合预期需要被动使用消耗运行资源追加排列归类的情况事件。</p>
 <hr>
-<h2 id="2-需求侧大一统规划器的排序货币化"><a class="header" href="#2-需求侧大一统规划器的排序货币化">2. 需求侧大一统：规划器的排序货币化</a></h2>
-<p>在嵌套复杂的 SQL 分析大河中，混杂了无数试图干预排序的操作符：</p>
+<h2 id="2-操作请求向统一形式的转换"><a class="header" href="#2-操作请求向统一形式的转换">2. 操作请求向统一形式的转换</a></h2>
+<p>在综合型分析请求当中具备各种不同的对于底层上发排序归队约束期待动作需要。</p>
 <ul>
-<li>终端发出了 <code>ORDER BY a, b</code> 要求顺位。</li>
-<li>聚集指令下了 <code>GROUP BY c, d</code> 在启动 GroupAgg 前要求聚类有序。</li>
-<li>过滤节点加了 <code>SELECT DISTINCT e</code> 企图通过排序来实现滑动去重。</li>
-<li>大名鼎鼎的 <code>Merge Join</code> 强迫两营输入流按等同键绝对序列接壤。</li>
+<li>要求通过指令如 <code>ORDER BY a, b</code> 得到有序排档响应展示。</li>
+<li>由聚集命令下发送求像 <code>GROUP BY c, d</code> 要求为了可以平顺流完成统计之前要求归并序列表态。</li>
+<li>在指令如过滤除清含有 <code>SELECT DISTINCT e</code> 的执行尝试想依靠排期去重计算得到剔重序列。</li>
+<li><code>Merge Join</code> 将强制对左右子路径输入的参数需要达到符合要求的连同有序比配进行匹配交结合。</li>
 </ul>
-<p>对于老手工作坊式引擎，可能需要为以上所有情况各自手编一套“排序对账单”。
-但在 PG 那神级铺陈的 <code>pathkeys.c</code> 架构中，所有这种排序请求，无论初衷为何，都会在预检阶段被诸如 <code>make_pathkeys_for_sortclauses</code> 的函数接管，彻彻底底<strong>等价兑换为唯一标准流通物——<code>PathKey List</code> 链表。</strong></p>
-<p>自大优化网络全面铺开的那一顷刻，优化器这个中央智脑，再也听不懂所谓的 ORDER BY 或 GROUP BY。它在判断下层分支能否直接插接时，唯一遵循的就是查验 <code>pathkeys</code> 国书。</p>
+<p>为支持不同的底层计算机制能具有通用统一的可对标处理对比审核衡量参照坐标依据物。在此套被 <code>pathkeys.c</code> 框架体系管理之中，无论是怎样的请求，所有的需要有序支持的意图参数均都会向通过系统提供的统一调用模块入口预核比如 <code>make_pathkeys_for_sortclauses</code> 作整合转换成唯一的标准序列传递比较物件——<strong><code>PathKey List</code>（路向结构键链表）</strong>。</p>
+<p>在往后各个不同分支对碰或评估筛选审核时不再判断请求起因是什么关键字调用语句，只需提供审核要求给出的比对表参照与执行实际拿出的附随参数 <code>pathkeys</code> 进行统一对比就可以判断是否符合预制需要特征。</p>
 <hr>
-<h2 id="3-供给端长河pathkeys-的诞生传承与覆灭"><a class="header" href="#3-供给端长河pathkeys-的诞生传承与覆灭">3. 供给端长河：PathKeys 的诞生、传承与覆灭</a></h2>
-<p>面对这条流转下的继承物 <code>pathkeys</code>，不同物理计划节点态度截然不同：</p>
-<h3 id="31-源氏的血脉底层索引扫描"><a class="header" href="#31-源氏的血脉底层索引扫描">3.1 源氏的血脉：底层索引扫描</a></h3>
-<p>最纯粹的 <code>pathkeys</code> 孕育自 B-Tree。定位到 <code>indxpath.c</code> 内部的 <code>build_index_pathkeys</code>：
-当检索刺入索引结构时，PG 产生出一个拼接的衔接 <code>PathKey</code> 队列，赋予在即将上抛的 <code>IndexPath</code> 头上。如果是走路线粗犷的 <code>SeqScan</code>，生成的归口登记簿对于 <code>pathkeys</code> 则是一个干脆的 <code>NIL</code> (完全空指针)，宣告这是一堆无序的散沙。</p>
-<h3 id="32-屠夫hash-join-的破壁"><a class="header" href="#32-屠夫hash-join-的破壁">3.2 屠夫：Hash Join 的破壁</a></h3>
-<p>当你汇入双表关联：
-性能王者 <strong>Hash Join</strong> 的作风极其粗野。它压根不顾及底层是不是辛苦排好序的。它的底盘是将小表倒进哈希池开桶，随即拿大数据集激化碰撞。碰撞出水瞬间，所有的历史排序规律全盘崩散。
-因此任何基于 <code>hash_inner_and_outer</code> 衍生的路径，它的光环继承簿 <code>path-&gt;pathkeys</code> 必定被无情洗白清零成为 <code>NIL</code>。</p>
-<h3 id="33-恪礼的承传者nestloop-join"><a class="header" href="#33-恪礼的承传者nestloop-join">3.3 恪礼的承传者：NestLoop Join</a></h3>
-<p><strong>嵌套循环联合 (NestLoop)</strong> 恪守着外表驱动一再往复过滤匹配的准则。
-外环本有的序列起伏节奏，在吸纳内表后竟然绝妙地没有丝毫偏差！因此优化器会温柔地调用 <code>build_join_pathkeys</code>，把外表（Outer Rel）持有的金字令箭原封不动、极其虔诚完整地誊抄接手下来！</p>
+<h2 id="3-生成产生及传承继承与核销清理过程"><a class="header" href="#3-生成产生及传承继承与核销清理过程">3. 生成产生及传承继承与核销清理过程</a></h2>
+<p>不同的路径查询对于能够产生自带参数属性继承传递流向有不同的特性效果和反馈机制：</p>
+<h3 id="31-自发产出继承者传递源支持的结构读取模式"><a class="header" href="#31-自发产出继承者传递源支持的结构读取模式">3.1 自发产出继承者传递源：支持的结构读取模式</a></h3>
+<p>例如在 B树等自身能形成特征获取流中。源码处理归属在于例如 <code>indxpath.c</code> 下属模块部分逻辑中在调用查向读取例如通过 <code>build_index_pathkeys</code>：
+伴随查找处理顺带附贴一组标有自己产生能顺向匹配获取的拼接 <code>PathKey</code> 数据结构属性队伍交于抛上的路线携带头等提供作为声明参考，相对比较对于像大范围扫描的例如 <code>SeqScan</code> 顺序平推的此获取对等于毫无特殊提取特性标识记录返回赋上对于说明则提供归为一个完全表示虚空指针对象表示为空向其报告说明 <code>NIL</code> (提供表示此返回是一个并不保留特型序列情况的打靶表示)。</p>
+<h3 id="32-截阻覆灭重清结构特征产生者如哈希处理"><a class="header" href="#32-截阻覆灭重清结构特征产生者如哈希处理">3.2 截阻覆灭重清结构特征产生者：如哈希处理</a></h3>
+<p>涉及到通过基于比如带有类似破坏输入原始参数记录排期操作特性运算的情况机制：例如被归为散集装载撞击验证哈希验证的：
+此由于在操作时依赖装入桶结构特征以碰撞重构完成动作处理因此将会丢失原有由提取输入底层本身带有次期特征记录，在此经转后由于特性灭失所有由此依靠产生所派生结构衍生出去输出将统一强判清理消除洗除重新定义输出不具有排列能力报告设定位 <code>path-&gt;pathkeys</code> 指设为空置归宿状态 <code>NIL</code>。</p>
+<h3 id="33-无差转录延续流传保留机制传承体例如迭代嵌套循环方式"><a class="header" href="#33-无差转录延续流传保留机制传承体例如迭代嵌套循环方式">3.3 无差转录延续流传保留机制传承体：例如迭代嵌套循环方式</a></h3>
+<p>如在此种模式结构动作（如 NestLoop）等不产生更改外部原提供入项其特征排位相序特征获取动作下：
+在其完成处理整合运算往高维度流输出推送数据过程中依然保有着来自初始引入源提供的相同表现规律一致体现的情况之下系统将会安全放行原装抄录转移引用保留传递原样提取信息交棒下去到本节点输出对外公开引用说明中不做阻断破坏。（通过提取函数拷贝等引用调用 <code>build_join_pathkeys</code> 对向处理执行操作实现无耗损引用指配）。</p>
 <hr>
-<h2 id="4-终界审判修剪免死金牌-path-pruning"><a class="header" href="#4-终界审判修剪免死金牌-path-pruning">4. 终界审判：修剪免死金牌 (Path Pruning)</a></h2>
-<p>这也是隐藏于代价运算机制底下最为反转的绝魂之跃。
-前文提过：<code>add_path()</code> 是一座极度现实的达尔文“裁决法庭”。如果不带排序加成，一条起步慢、总价高昂的路，百分百会被当场遗弃清盘！</p>
-<p><strong>但是！</strong> <code>PathKeys</code> 的设计存在，作为优化器世界的最高精神免死金牌，超降维介入干涉了丛林淘汰法则！</p>
-<p>我们在极其严密的 Cost 较量之前，会看到如圣言般的预演过滤：<code>pathkeys_contained_in(path1-&gt;pathkeys, path2-&gt;pathkeys)</code>。</p>
-<p><strong>一出震撼的剧本模拟</strong>：</p>
+<h2 id="4-pathkeys-引导裁决干预对优选结果裁剪机制的保留容赦操作干预"><a class="header" href="#4-pathkeys-引导裁决干预对优选结果裁剪机制的保留容赦操作干预">4. <code>PathKeys</code> 引导裁决干预：对优选结果裁剪机制的保留容赦操作干预</a></h2>
+<p>在此设计也决定了参与后续判定是否可留在计划路线上的判断。
+对于底层对碰分析去杂清理优劣模块判断如 <code>add_path()</code> 操作流程函数内部，存在着依赖对比比算结果开票抉除丢弃耗损较高运算计划手段保障。</p>
+<p>然而，通过 <code>PathKeys</code> 设置能提供免除淘汰豁免权的可能影响到执行计划最终形成！
+执行核心针对比较淘汰程序运算前加入了针对特型特征比判：检查对比两者中拥有包容覆盖状态判别对比过程（涉及逻辑功能调用在 <code>pathkeys_contained_in</code> 执行预演）。</p>
+<p><strong>保护淘汰运算推演案例机制参考</strong>：</p>
 <ul>
-<li>路径 A 候选：采用了一套笨重到令人发指的 SeqScan 自己全强制做重排序，开机代价大、总跑算价高昂至上千万！但自带了飘扬顺气的 <code>pathkeys = (t1.uid)</code> 序列大旗。</li>
-<li>路径 B：一条能让算力尖叫绝世闪电的 Hash Join 超短通。起步快，全跑完不过区区大几千的消耗！但其身如恶兽全无秩序，<code>pathkeys == NIL</code>。</li>
+<li>设在路线 A 生成过程由于选取采用了非常低端低速重工处理代价总评分耗计算评差极不可取的分析报告但其中自持有与最后生成所需求目标相一致符合要求提供的顺序规律序列附带特征记录 <code>pathkeys = (...)</code> 标记。</li>
+<li>相向产生路线 B 作为快速通过拥有耗量最低估测得分总花费占优报告评估表现可作为正常状态必优方案的获取推荐但附随报告没有任何排列规则次序附征（<code>pathkeys == NIL</code>）。</li>
 </ul>
-<p>在没有神圣豁免的高维排序非闭包界中，这路 A 小丑绝必立刻暴死；新贵 B 将扫平一切！
-但！在 PG 那深不可测的总决策眼界里，如果裁断虽然感觉 A 烂如破泥，<strong>但是它顶头上那副全维的列旗却死超囊括了那光秃和残旧的 B 所全不配所有的法度红利。</strong> 哪怕 A 的纸面耗费远高千倍估算成本线，PG 的主引擎手此时都会赫然插进力保：活拉下这面破 A 强行封卷！并永作存档列留进那最重要的预备大底座。</p>
-<p><strong>最高中枢为何要苦保下流之列？</strong>
-因为中枢老辣深沉，在那远不见底的高顶组装关隘，它可能遭遇十重极度变态的 <code>Merge Join</code> 强令，更甚至撞见最冷酷杀神终极底符 —— <code>LIMIT 1</code>。</p>
-<p>在极端灭顶的洪荒恶劣要求下。那个自持着武功第一极速猛飙全图却无次序的 Hash Join，为了强硬生拼全图结果以抗排期对局，甚至会被逼到去开启巨型外部破落磁盘暂存归排而令总价飙出百合千万计而炸穿。
-反观那被上帝强保下这带好顺行秩序之破胎分支 A！在瞬满交接关斩停下 <code>LIMIT 1</code> 诉求那一刻。凭那极其超前精准拿对序列之完美契合并极速掐流神力直接砍停，瞬间封神！
-通过此一层维向特比的神来保护局体系法道，奠基于 PostgreSQL 历经数十载依然傲立于星空云端王者之无上统治地位！</p>
+<p>若在平时基础单纯按耗分标准评估流程势必当场剔去路线 A。
+不过若判断若能使用上携带特带序列属性（免做另外运算需求），而在主计划查询里存在像 <code>MERGE</code> 以及类似最后卡断 <code>LIMIT</code> 限值要求的极特殊对需要特性支持下，能不用后续执行大量重新提取转储组合就可以马上得到特供顺序列完成反馈结果对于此情况拥有巨大提升优势下优化决策系统为了保存对大类特殊处理能力可能强制插标挽留这条从总代价评估表面数据看似非常没必要存在的特殊类型。这就保留了各种可能性供最后的顶端调度执行者可以得到有充足应对针对解决要求指令执行优化调度选择途径预留的重要基盘配置机制体制保证。</p>
 
                     </main>
 
