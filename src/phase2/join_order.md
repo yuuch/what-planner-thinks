@@ -1,60 +1,60 @@
 # 多表连接次序与等价类推导 (Join Ordering & Equivalence Classes)
 
-当查询从单表跃升为多表连接（Multiple Joins）时，优化器迎来了它最耗算力的终极考验：**决定表的连接顺序（Join Order）以及连接方式（Join Methods）**。
+当查询从单表查询跃升为多表连接（Multiple Joins）时，优化器将面临最为计算密集型的任务：**确定最优的表连接顺序（Join Order）以及连接方式（Join Methods）**。
 
-在理论中，N个表的联接顺序组合数呈阶乘爆炸。为了寻找最优解，只要参与联接的表数量低于预设的 `geqo_threshold` 阈值（默认 12），**规划器就会坚定地踏入自底向上的动态规划（Bottom-up Dynamic Programming）深水区**。
+在理论上，N 张表的连接顺序组合数量随着 N 呈指数级增长。为了在合理的时间内寻找最优解，只要参与连接的基表数量低于预设的阈值（`geqo_threshold`，默认值为 12），**规划器就会使用自底向上的动态规划（Bottom-up Dynamic Programming）算法**。
 
-本章节紧扣 PG 18.1 在 `src/backend/optimizer/path/joinpath.c`、`joinrels.c` 乃至 `equivclass.c` 的源码，深度剖析动态规划建树过程。
-
----
-
-## 1. 动态规划底盘：致敬 System R 
-
-PostgreSQL 骨子里流淌着 IBM System R 奠定的经典动态规划（DP）搜索思维。
-
-### 1.1 从单打独斗到万物互联
-动态规划秉持最优子结构思想：求 N 张表合并的最优解，就从底部的任意 2 个表搭伙算起，再算 3 张的……以此类推。负责发号施令的主函数为 **`make_rel_from_joinlist`**。
-
-算法调用 **`standard_join_search`** 进入标准的 DP 轮回：
-* **第一层 (Level 1)**：单表路径（来自 `set_base_rel_pathlists` 的成果）业已就绪，被投入到 `join_rel_level[1]`。
-* **状态跃迁 (Level 2~N)**：外围庞大的循环从 `Level = 2` 开始爬坡。每一层的新组合都由之前计算出的最优子集拼合而来，执行核心递归计算枢纽是 **`join_search_one_level`**。
-
-### 1.2 Left-deep 与 Bushy Tree
-在连接树的探索过程中，有两种典型的生长结构：
-* **左深树 (Left-deep Tree)**：老连接结果集直接和单个新基表去拼凑。这种操作占用的内存上下文极少，非常契合 NestLoop 带 Index Scan 这种流式循环。
-* **灌木丛树 (Bushy Tree)**：允许两个中途拼出的临时大合集互相合并。当复杂查询两侧同时具备高过滤性时，它能打出断代级别的性能优势。
-
-相比古典引擎死守左深树，PG 在 `join_search_one_level` 推进下不仅包容左深树路线，更敢于让老手互拼去探索狂放的 Bushy 魔树空间！
+本章结合 PostgreSQL 18.1 在 `src/backend/optimizer/path/joinpath.c`、`joinrels.c` 和 `equivclass.c` 中的源码，剖析多表连接时的底层优化决策。
 
 ---
 
-## 2. 推理大师的逆袭：等价类 (Equivalence Classes, EC)
+## 1. 动态规划基础 
 
-在放飞动态规划之前，绝对绕不开一张最强底牌：位于 `src/backend/optimizer/path/equivclass.c` 的等价推理机制。
+PostgreSQL 的多表连接优化使用了经典的关系代数优化策略——动态规划搜索。
 
-### 2.1 隐式约束的高维度拦截
-如果有句 SQL 写着 `WHERE A.id = B.id AND B.id = C.id AND A.id = 5`。传统引擎往往忘了通知还没见面的 B 和 C！
-但 PG 凭借等价类结界 `EquivalenceClass` 实体桶，直接将 `{A.id, B.id, C.id, 5}` 当成同一根绳上的蚂蚱死死绑定。
+### 1.1 从单表到连接结果集
+动态规划采用构建最优子结构的策略：要找出 N 张表的最优连接顺序，首先计算任意 2 表连接的最优路径，接着基于这些 2手表的结果集计算 3手表的最优连接，以此类推。这一过程的核心调度函数为 **`make_rel_from_joinlist`**。
 
-随后祭出 **`generate_implied_equalities`** 神技：不管优化器当下在哪个角落想要扫描底层的 `B` 或者 `C`，它都会下意识查老底。一看 EC 里存在常量 `5`，立马如获至宝地凭空变出 `B.id = 5` 和 `C.id = 5` 的前置隐式拦截指令。
-这就赶在多表庞大合并引发雪崩之前，通过直接调用单表的 Index Scan，硬生生把上亿行的烂摊子秒杀在前线阵地上。
+算法主要调用 **`standard_join_search`** 函数来实现 DP 流程：
+* **第一层 (Level 1)**：处理单表访问路径（由 `set_base_rel_pathlists` 阶段生成完成）。
+* **多层状态合并 (Level 2~N)**：外层系统从 2 张表组合开始迭代。在每一层的循环中，新的组合都是由前置层的最优子集经过组合而来，这一任务核心依赖 **`join_search_one_level`** 递归枢纽进行计算。
+
+### 1.2 左深树与灌木丛树
+在连接树形状的探索中，典型的树状结构主要为两种：
+* **左深树 (Left-deep Tree)**：之前的连接结果集（作为左侧表）直接与单个新的基表进行合并连接。由于其中一方通常是单表，这种结构极大地降低了执行器在运行时内存上下文的开销，非常契合嵌套循环带索引扫描（NestLoop + Index Scan）的流式执行模式。
+* **灌木丛树 (Bushy Tree)**：支持两个作为临时中间结果集的复合关系之间进行连接合并。这种结构在面对两份结果集均具备较高过滤性时，能够带来卓越的连接性能提升。
+
+在现代的 `join_search_one_level` 遍历下，除支持传统的左深树枚举以外，也增加了探索 Bushy 树可能性的选项，这为寻优阶段提供了更大的解空间。
 
 ---
 
-## 3. 点兵列阵的终极派活：`populate_joinrel_with_paths`
+## 2. 等价类 (Equivalence Classes, EC) 推导
 
-当 DP 决定拿 RelA 和 RelB 拼作一个大联盟（Rel A+B）后，它会将打磨三大物理连接方式的脏活苦活悉数推给 `populate_joinrel_with_paths()` 熔炉函数。
+在启动全面的动态规划之前，优化器必须处理存在于系统查询中的多重等值约束条件，其逻辑实现在 `src/backend/optimizer/path/equivclass.c` 中。
 
-### 3.1 狂野盲连与死磕：NestLoop / HashJoin
-该函数一上来大喊 `match_unsorted_outer`，测试原生态无序对抗：
-* **NestLoop Join**：如果此时手头带有参数化借力武器（Parameterized Paths），外表便可将循环的每行值作为狙击参数下发给内表，从而使得内表直接唤醒沉睡中的索引发挥神效，绝境逢生翻盘！
-* **Hash Join**：要是碰到了等值交换，并且算盘先生评估内表塞进内存哈希桶（Hash Bucket）的开销尚能忍受，这就成了大批流灌数据相互撕咬最高效的无序神兵。
+### 2.1 隐式约束下推
+在复杂的 SQL 语句中，类似 `WHERE A.id = B.id AND B.id = C.id AND A.id = 5` 的级联关联条件非常普遍。
+借助等价类机制（`EquivalenceClass` 实体），PostgreSQL 将这些互相关联的过滤要求整合在一起，将 `{A.id, B.id, C.id, 5}` 识别为同一组变量集合。
 
-### 3.2 讲究排场的序列：Merge Join
-随后的 `sort_inner_and_outer` 则要高雅得多。
-Merge Join 极度依赖双方自带的序列。它如饥似渴地扒着双边结果集的 `pathkeys`（输出特征），看看它们原生的排序是否对上眼了联接条件。如果恰好都有命合，这招的发起成本便是一路雪崩跌到谷底；如果不巧没有，哪怕硬着头皮加上高昂内存 `Sort` 花费，PG 也会把它送上决策席比对。
+随后调用 **`generate_implied_equalities`** 时：系统自动推断并衍生出隐含的条件约束，比如向未明确说明的 B 和 C 生成 `B.id = 5` 及 `C.id = 5` 的精确相等限制约束。
+这类隐含条件的下推操作能够让在底层独立扫描对应的表时直接走索引读取或对查询结果进行强力剪裁，大大避免了连接上亿规模数据前无效联接的资源消耗。
 
-### 3.3 Materialize 的缓存魔法
-如果在多层 Nestloop 内部嵌套里发现某个内部小圈子被反复频繁读取而累得喘不上气，系统会自动呼唤 `create_material_path` 在途中加塞一个钉子般的缓存节点，保留救命结果集。
+---
 
-最终，各显神通的所有招式会被集体塞入无情的 `add_path` 刽子手门外。它像极其功利的督工一样排查评估谁跑得快谁带的好处多，把没用的统统扔进深渊，剩下的真金战神统统稳坐 `RelOptInfo->pathlist` 决胜席位。
+## 3. 连接路径节点生成：`populate_joinrel_with_paths`
+
+当动态规划选定要将两个表集合合并成一个新的组合结果后，系统会将探索物理连接方式的工作分配给 `populate_joinrel_with_paths()` 函数生成相应的路径。
+
+### 3.1 嵌套循环与 Hash Join 探测
+函数首先调用 `match_unsorted_outer`，不考虑输入侧表顺序，尝试生成以下基础连接形式：
+* **NestLoop Join (嵌套循环连接)**：若系统具有可用的参数化路径（Parameterized Paths），外部表的结果即可依次充当向内层下发的参数以命中内表索引。这种带索引的嵌套循环尤其在其中一方表非常小，且被命名的列存在对应下层优化时效率很高。
+* **Hash Join (哈希连接)**：面对需要处理等值条件的大规模关联匹配，如果经内部规模检查内层表被预估可以顺利在内存的哈希分配桶（Hash Bucket）中载下，那么 Hash Join 即作为高效无序吞吐的基础连接方式呈现出强大的效能。
+
+### 3.2 排序优先归并：Merge Join
+接下来的逻辑由 `sort_inner_and_outer` 负责。
+Merge Join (归并连接) 对两侧表输出行的相对顺序高度敏感，它需要通过检索左右两侧流属性上的排序能力信息（`pathkeys` 特征）是否吻合联接标准。对于天生已具备一致顺序特征的结果流，Merge Join 可以利用极低的算力优势组合两侧；如果双边或单边缺失排序属性，优化器也会预估强加上 `Sort` 节点来进行全量重新归档的时间成本，加入代价对比系统之中。
+
+### 3.3 缓存中间层：Materialize
+在处理高嵌套深度的关系时，若系统的某一处于内层子查询操作因为不带索引等原因被嵌套循环高频率往返检索而造成巨大损失开销时，优化器可自动加入 `create_material_path` 在途中增设一条具有执行临时落盘内存保护作用的中间缓存（Materialize 节点）集预留路径保障。
+
+最终，由不同的联合策略所搭建的路线都被发送到 `add_path` 函数进行效用和总体花销的比对裁决，代价高且无辅助优化的较差选择被抛卸不用，而具备最好收益（最低耗或最具排序保留项优势等）的节点将挂载回最终生成组的 `RelOptInfo->pathlist` 的保存战绩单。

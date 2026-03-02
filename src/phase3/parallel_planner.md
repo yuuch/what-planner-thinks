@@ -1,80 +1,79 @@
 # 并行执行计划生成 (Parallel Query Planning)
 
-自从 PostgreSQL 9.6 划时代地引入并行查询架构以来，如今在 PostgreSQL 18.1 中已经发展成了一个极为庞大、健壮且无缝融入代价优化器（CBO）的深水区模块。
+PostgreSQL 在 9.6 版本引入了并行查询架构，截至 18.1 版本，该架构已深度整合至代价优化器（CBO）中，成为处理分析型查询的重要手段。
 
-并行查询的魔力在于：当面对亿级别的海量数据集扫表或重型聚合时，规划器可以果断打破此前单进程单核运算的桎梏，派遣多个后台工作进程（Background Workers）分进合击，最后再由发起查询的主进程（Leader Process）进行数据汇总。
+并行查询的核心思想是：在处理大规模数据扫描或复杂的聚合操作时，利用多个后台工作进程（Background Workers）分担计算任务，最终由发起查询的主进程（Leader Process）进行数据整合。
 
-在这个章节中，我们将深深扎入源码底层的并行网格，搞清楚“谁在下派任务”、“怎么汇总结果”以及“惊艳的并行 Join 是怎么实现的”。
+本章将探讨规划器中与并行执行相关的设定，涉及部分路径的生成、数据的收集汇总以及并行连接机制。
 
 ---
 
-## 1. 并行的基石抽象：Partial Path 与 Gather
+## 1. 并行的基础构件：Partial Path 与 Gather
 
-所有的并行计划，在优化器里的表现形式无非是两个全新出现的构件。
+在优化器中，生成并行计划的基础在于两种特殊的算子抽象：部分路径和收集节点。
 
 ### 1.1 部分路径 (Partial Path)
-如果你之前读过“单表扫描”章节必然记得：在 `set_plain_rel_pathlist` 中，系统不但会添加一条 `SeqScan` 路径，还会调用 `create_plain_partial_paths` 添加一条被称作 `Partial Path` 的分身。
+在“单表扫描路径生成”阶段，`set_plain_rel_pathlist` 在生成 `SeqScan` 路径的同时，也会调用 `create_plain_partial_paths` 生成一条 `Partial Path`（部分路径）。
 
-**什么是 Partial？**
-Partial 的物理意义是：**“这条路只要扔给一个独立 Worker 去跑，它只会吐出现有总数据量的一个局部切片（Slice）”**。
-为了实现互不干涉的切片，底层执行器在扫表时会依赖动态共享内存（DSM）里维护的原子游标（Block Counter）。多个 Worker 拿原子操作去抢页，谁抢到了谁读，导致输出的数据是无序且切分的。
-在规划阶段（Planner），它通过设置并行进程数大于零，并且将此路的预期代价值按比例折算入库。
+**特点**：
+部分路径表示该路径分支如果由某个独立的工作进程执行，它只会输出整体数据的一部分（Slice）。
+为了实现互不干扰的切片，底层执行引擎通过动态共享内存（DSM）中的共享计数器（Block Counter）协调扫描进度。由于各个 Worker 竞争性地获取数据块进行处理，导致部分路径输出的数据通常是无序的。
+在生成计划阶段，系统设定并行的进程数量，并按比例计算和调整这条路径对应的成本。
 
-### 1.2 并行安全 (Parallel Safe) 的铁律
-不是所有的一切都可以拉起并行！优化器在任何一个关系被标记为 `consider_parallel = true` 前，都会启动一场极度严苛的 `is_parallel_safe()` 地毯式搜查。
-1. **函数检验**：如果在 `WHERE` 或者 `TargetList` 里面引用了一个被标记为 `PARALLEL UNSAFE` 的用户自定义函数（比如直接写表的函数），那么整个脉络将永久拉黑并行。
-2. **写事务隔离**：绝不可以在含有未提交缓冲数据的临时表（Temporary Tables）上生成并行作业，因为 Worker 进程不允许看到 Leader 的私有本地内存更改。
+### 1.2 并行安全性检查 (Parallel Safe)
+在优化器评估某个表关系是否可以采用并行策略（标记 `consider_parallel = true`）前，必须通过 `is_parallel_safe()` 进行严格的约束条件检查。
+1. **函数校验**：如果查询中的 `WHERE` 或 `TargetList` 子句引用了被标记为 `PARALLEL UNSAFE` 的用户自定义函数（如修改表状态的函数），那么优化器将禁用并行路径。
+2. **读写隔离**：对于包含未提交数据的临时表（Temporary Tables），系统不会生成并行作业，因为后台子进程无法访问 Leader 进程的私有内存变更。
 
 ---
 
 ## 2. 收集节点：Gather 与 Gather Merge
 
-光有各个 Worker 在底下苦哈哈地算出局部结果（Partial Path）是不够的。这些支流必须要被收束回主进程（Leader Process）形成唯一的流。
-优化器会通过不断往上推进调用 **`generate_useful_gather_paths()`** 强行为底部的 Partial 树冠盖上一个叫 `Gather Node` 的盖子。
+由多个 Worker 独立运算出的局部数据（Partial Path）需要汇总至主进程（Leader Process），形成统一的数据流。
+优化器通过调用 **`generate_useful_gather_paths()`**，在部分路径树的上方添加 `Gather Node`（收集节点）。
 
-有了 Gathering，一条残缺的 `Partial Path` 在顶层看来就重新变成条完整的正常路参与总角逐。按照是否保序，PG 提供了两大收束神器：
+添加了 `Gather` 节点后，原本局部的路径变为了完整的扫描路径。根据对数据序列的保留要求，PostgreSQL 提供了两种收集策略：
 
-### 2.1 粗犷提速的无序统合 (Gather)
-最经典的 Gather 算子。
-Leader 创建多个队列池并启动协程。各个 Worker 算完数据就往共享内存的消息队列里无脑塞。Leader 轮询拿到什么数据就立刻吐给客户端。这是对性能损耗最低的手段，但它把所有的底层排列完全打乱了。
+### 2.1 基础的记录收集 (Gather)
+最常见的无序收集算子。
+Leader 进程启动多个工作进程，工作进程完成计算后将结果发送至基于共享内存的消息队列。Leader 以轮询方式获取数据。这种方式的开销相对较低，但收集的数据不再保持底层工作进程可能自带的处理顺序。
 
-### 2.2 优雅的保序收集 (Gather Merge)
-**这是一个极为考究代价取舍的东西。**
-假设你底下一个 Worker 在走并行 B-Tree 索引扫描（保证了单 Worker 自己读到的局部区块是有序的）。Leader 在收到这 N 个流时，如果不加思索地套用 Gather，出来的总集就是一堆交错乱序的数据。
+### 2.2 保持排序的收集 (Gather Merge)
+**该策略涉及代价的权衡。**
+如果在下方执行的 Worker 使用了如并行 B树索引扫描（单 Worker 读取的局部数据是有序的），Leader 在合并这 N 个结果流时，若是普通的 Gather，总结果集会变为无序。
 
-但在某些场景下，上层非常需要这个 `ORDER BY` 排序。
-此时 PG 会盖上一个 `Gather Merge`！
-Gather Merge 节点自带一个 **堆排优先队列 (Min-Heap / Priority Queue)**。它死死盯住 N 个 Worker 发来的管线头，不断抓取极小值向上抛出，从而完美确保了 N 个已排序局部流在合成时，**丝毫不破坏总体的有序性！**
+当外层查询（如 `ORDER BY` 等操作）需要维持数据的有序性时，优化器会考虑使用 `Gather Merge`。
+Gather Merge 节点维护了一个堆结构优先队列 (Min-Heap / Priority Queue)。它监视 N 个 Worker 传回的数据流，持续抽取最小值合并，从而在整合多路局域排序数据时，保证了**总体结果集的严格顺序**。
 
 ---
 
-## 3. 并行连接 (Parallel Joins) 的底层黑科技
+## 3. 并行连接 (Parallel Joins) 机制
 
-如果并行只能做全表扫，遇到 Join 依旧回退到串行那就如鸡肋。PostgreSQL 的王炸在于针对三种不同的物理 Join 设计了出神入化的并行执行版本。
+不仅是全表扫描可以并行，PostgreSQL 针对表连接操作同样设计了并行执行方案。
 
 ### 3.1 Parallel Hash Join (并行哈希连接)
-普通的 Hash Join，如果让 N 个进程并行，很可能会有 10 个进程在内存里各自建了一个一样的外表 Hash Table，完全浪费内存，甚至 OOM。
+如果采用普通的 Hash Join，分配 N 个进程将导致各自在本地构建并维系外表的哈希表，不仅浪费内存，且无法协同。
 
-在 PG 中，通过了史诗级的同步：**基于 DSM 的 Shared Hash Table（共享哈希表）**。
-1. **建表 (Build Phase)**: Leader 在 DSM 中开辟好小表的坑位。所有的 Worker 一拥而上读取内表，然后共同把 Tuple 塞进这唯一的大 Hash 桶里！
-2. **锁步栅栏 (Synchronization Barrier)**: 用一个全局信号，强制等所有 Worker 把建表拼完。
-3. **嗅探 (Probe Phase)**: 放开栅栏！所有 Worker 扭头去对外表（Outer Table）开启无序分块扫。扫出一条就跑去大表碰哈希。彻底把 Join 计算跑满多核 CPU。
+在 并行执行方案中，系统使用基于 DSM 的 Shared Hash Table（共享哈希表）。
+1. **构建阶段 (Build Phase)**: Leader 在 DSM 中分配空间。所有的 Worker 同时扫描内表，并将记录共同填充至同一张共享哈希桶中。
+2. **同步屏障 (Synchronization Barrier)**: 系统使用全局屏障信号，确保所有 Worker 等待共享哈希表完全建立完毕。
+3. **嗅探阶段 (Probe Phase)**: 屏障解除后，所有 Worker 独立对外表（Outer Table）获取分块（执行部分扫描），并行使用哈希表进行探测与计算。
 
 ### 3.2 Parallel Nested Loop (并行嵌套循环)
-这个看起来非常粗暴但往往有奇效（尤其当使用**参数化路径 Parameterized Path**）时。
-* **外表切片**：Outer Table 必须是一个 Partial 数据流状态（多个 Worker 在抢外表数据）。
-* **内表广播**：Inner Table 是串行的 Full 扫描。这意味着每一个 Worker 每次抢到一行外表数据后，都要拿着这行数据去对完整的内表进行一次（通常是 Index Scan 的）扫描。这类似于大数据的 Broadcast Join 思想。
+这种模式结构较为简单，但在配合参数化路径（Parameterized Path）时可能发挥重要作用。
+* **外表配置**：外部表 (Outer Table) 必须是一个部分数据流（Partial）状态，即由多个 Worker 共同竞争分担外表的扫描数据。
+* **内表配置**：内部表 (Inner Table) 是完整的串行扫描表现。这意味着每一个 Worker 每次处理一行外表数据后，都要去扫描完整的内表（通常是携带参数的 Index Scan 检索）。这与分布式计算结构中的广播关联（Broadcast Join）思想相似。
 
 ---
 
-## 4. 并行查询的代价模型打压 (Cost Punishments)
+## 4. 并行查询的代价惩罚权重 (Cost Punishments)
 
-你或许会问：既然并行这么天下无敌，为什么 PG 大多数查询还是单机的？
-优化器里存在两个著名的估算打压：**Setup Cost** 与 **Communication Cost**。
+尽管理论上并行执行能缩短响应时间，但 PostgreSQL 在判断中会考量并行启动和进程间通信带来的损耗。
+在代价评估中，主要有两个参数起到约束和惩罚的作用：**Setup Cost** 与 **Communication Cost**。
 
-1. **`parallel_setup_cost` (启动成本高昂)**
-   拉起后台进程是一个结结实实的操作系统 `fork()`。优化器会在计划里硬砸下默认高达 `1000.0` 代价的初始启动惩罚，这意味着只有执行时间可能需要大几秒的沉重查询，才“配得上”并发。
-2. **`parallel_tuple_cost` (通讯细微阻塞)**
-   将数据从 Worker 写入环形缓冲，并在主进程抽出来。这是一笔不可忽略的 IPC 收发代价。若查询结果有千万级交由 Leader 吐出，这笔惩罚加起来极为震撼。系统可能会因此妥协：“还是干脆单核扫完，免得在内存里互相等锁阻塞”。
+1. **`parallel_setup_cost` (启动成本)**
+   启动一个工作进程需要申请和分配内存、初始化进程等操作。优化器在此操作上设定了默认的固定开启阈值（默认 1000.0）。这意味着只有预估耗时较长的重型查询，才能够忽略这笔启动成本选择并行路径。
+2. **`parallel_tuple_cost` (元组通讯成本)**
+   涉及共享内存中队列的进出及主进程的数据提取等。这反映了进程间通信（IPC）引发的开销。若查询返回结果集庞大，这部分损耗将被累加至总体成本，系统借此模型计算选择更划算的执行模式。
 
-通过对上述所有精妙代数模型估算并在最后层交火比拼。在 `grouping_planner` 收尾时刻，如果是自带 Gather 的这棵庞然大物路径总体成本比串行确实大幅胜出，那么恭喜，这张 SQL 稿件，即将驱动整个服务器的 CPU 集群矩阵疯狂咆哮了。
+在 `grouping_planner` 最终确立执行计划前，只有当携带了 `Gather` 及其所有下属成本计算节点总和（Total Cost）确实显著低于对应的串行执行路线时，系统才会为相应的 SQL 请求批准并行执行模式。

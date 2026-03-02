@@ -1,56 +1,66 @@
-# 查询树的预处理
+# 查询树的预处理 (Query Tree Preprocessing)
 
-在 PostgreSQL 优化器（Planner）接收到解析和重写后的查询树（Query Tree）以后，第一步并非直接开始路径搜索，而是通过 `subquery_planner()` 函数进行一系列复杂的预处理。预处理的核心目标是消除查询中的冗余结构、展开嵌套，并对表达式进行规范化和简化，从而为后续的 `grouping_planner()` 和 `query_planner()` 减轻负担，提供尽可能扁平化和易于优化的结构。
+当 PostgreSQL 优化器接收到解析和重写完毕的查询树（Query Tree）后，首先会通过 `subquery_planner()` 函数进行预处理。
+预处理的主要目的是简化查询树，消除冗余结构并尽可能展平嵌套。系统会将复杂的表达式简化并规范化，从而为后续负责处理连接逻辑的 `grouping_planner()` 与 `query_planner()` 提供更清晰、扁平的基础结构。
 
-以下内容基于 PostgreSQL 18.1 源码（`src/backend/optimizer/plan/planner.c` 中的 `subquery_planner`）详细解析查询树预处理的各个核心阶段。
+以下内容结合 PostgreSQL 18.1 源码（核心逻辑位于 `src/backend/optimizer/plan/planner.c` 中的 `subquery_planner`），介绍查询树预处理的几个核心步骤。
 
-## 1. CTE 与底层结构展开
+---
 
-在真正进入表达式级别的预处理之前，优化器必须先把从属的查询块或语法结构给“铺平”。
+## 1. CTE 与子查询的处理
 
-* **处理 WITH 语句 (CTE)**: 调用 `SS_process_ctes`。如果 CTE 可以被内联（Inline），则将其展开为 `RTE_SUBQUERY`；否则构建出 InitPlan 级别的 SubPlan，以便在主查询执行前计算完毕。
-* **补全空 FROM 子句**: 通过 `replace_empty_jointree`。如果查询没有 `FROM`（如 `SELECT 1`），优化器会人为挂载一个 Dummy 的 `RTE_RESULT` 节点，统一后续的 JoinTree 处理逻辑。
-* **SubLink 的显式提升 (ANY/EXISTS)**: 调用 `pull_up_sublinks`。将 `WHERE` 或者 `JOIN/ON` 里面涉及 `ANY` / `EXISTS` 的相关子查询（SubLinks）尽早转化为半连接（Semi-Join）或反连接（Anti-Join）。
-* **子查询扁平化 (Subquery Pull-up)**: 调用 `pull_up_subqueries`。如果 `FROM` 子句中直接写了普通的简单子查询，系统会尝试将其合并到当前查询层级，消除不必要的嵌套。
-* **UNION ALL 的扁平化**: 遇到简单的 `UNION ALL`，调用 `flatten_simple_union_all` 将其重写为并列的追加关系 `appendrel`，避免复杂的集合操作开销。
+在处理具体表达式之前，优化器需要先将查询块和子句展开。
 
-## 2. RTE (RangeTableEntry) 预处理
+* **处理 WITH 语句 (CTE)**: 系统首先调用 `SS_process_ctes`。如果 CTE 满足内联（Inline）条件，优化器会将其展开并转化为普通的 `RTE_SUBQUERY`；如果不满足内联条件，则会为其单独生成 InitPlan 级别的 SubPlan，确保它在主查询执行前计算完毕。
+* **补全 FROM 子句**: 通过 `replace_empty_jointree` 函数处理没有 `FROM` 子句的查询（例如 `SELECT 1`）。优化器会为其挂载一个基础的 `RTE_RESULT` 节点，以便后续统一使用标准的连表 (JoinTree) 算法。
+* **SubLink (子引用) 提升 (ANY/EXISTS)**: 调用 `pull_up_sublinks`，将位于 `WHERE` 或 `JOIN/ON` 条件中的 `ANY` / `EXISTS` 等子查询提取出来，并尝试转化为半连接（Semi-Join）或反连接（Anti-Join）。
+* **子查询扁平化 (Subquery Pull-up)**: 调用 `pull_up_subqueries`，尝试将 `FROM` 子句中基础的子查询与当前查询层级融合，减少查询嵌套层级。
+* **UNION ALL 展开**: 遇到简单的 `UNION ALL` 时，优化器调用 `flatten_simple_union_all` 将其解构为平铺的追加关系（`appendrel`），从而避免复杂的集合操作开销。
 
-RangeTable 维护了查询涉及的所有表、视图、函数。
+---
 
-* **函数 RTE 内联与常量化**: `preprocess_function_rtes` 针对 `FROM` 子句中的函数进行计算。如果是简单的常数化函数，直接得出结果；如果有机会，则像展开视图一样将函数展开（Inline）。
-* **虚拟生成列展开**: `expand_virtual_generated_columns` 会扫描所有的表，将查询内涉及到 Generated Columns 的 `Var` 引用直接替换为其背后的计算表达式，方便一并在后续步骤被折叠。
+## 2. 关系表范围 (RTE) 处理
 
-## 3. 表达式预处理阶段 (preprocess_expression)
+RangeTable 记录了查询涉及的所有表、视图及函数。
 
-这是预处理代码块中占篇幅最大、也最为细腻的一环。系统不仅要处理 `WHERE` 里的条件，还要将 `TargetList`、`HAVING`、`LIMIT` 及 `ON CONFLICT` 等各处的表达式利用 `preprocess_expression()` 统统洗一遍。核心动作包括：
+* **函数 RTE 内联与常量化**: `preprocess_function_rtes` 负责处理 `FROM` 子句中的函数。如果函数不包含变量且为常量计算，系统会直接计算其结果；如果符合内联展开条件，则将其函数体展开并并入主查询。
+* **虚拟生成列的展开**: `expand_virtual_generated_columns` 会对表进行排查。当发现查询中引用了生成列（Generated Columns 的 `Var` 引用）时，优化器会用其背后的计算表达式进行替换，以方便后续的表达式化简。
 
-### 3.1 连接别名展开 (Join Alias Variables Flattening)
-通过 `flatten_join_alias_vars`，优化器将由于 `JOIN ... USING` 或自然连接引发的连接别名变量，替换为来自底层基表的原始列（`Var` 引用）。这确保后续的优化只需要面对最底层的真实列名。
+---
+
+## 3. 表达式预处理 (preprocess_expression)
+
+预处理阶段的核心步骤之一，是对 `TargetList`、`WHERE`、`HAVING`、`LIMIT` 和 `ON CONFLICT` 等各个部分的表达式调用 `preprocess_expression()` 进行规范化处理。其核心操作包括：
+
+### 3.1 连接别名还原 (Join Alias Variables Flattening)
+通过 `flatten_join_alias_vars`，优化器会将因为使用了 `JOIN ... USING` 或自然连接所产生的连接别名变量，替换回它们在底层基础表中的原始列名引用（底层的 `Var` 引用）。这保证了后续的优化逻辑只需处理物理表字段。
 
 ### 3.2 常量折叠 (Constant Folding)
-调用核心函数 `eval_const_expressions`。
-不仅会将 `1 + 1` 化简为 `2`，还能对各种内部函数的常量输入进行预计算（前提是函数为 Immutable）。重要的是，它会压平嵌套的 `AND/OR`（将 `AND (A, AND(B, C))` 变成 `AND(A, B, C)`）以保持逻辑树平坦。
+调用核心化简函数 `eval_const_expressions`。
+该函数除了计算简单的常量算术外，还会对内置稳定函数（Immutable Function）的常量输入进行提早计算。此外，它能将深层嵌套的条件进行扁平化处理，如将 `AND (A, AND(B, C))` 展平为 `AND(A, B, C)`。
 
-### 3.3 条件标准化 (Canonicalize Qual)
-利用 `canonicalize_qual` 函数，如果表达式是一个布尔条件（如 `WHERE` 里的项），它会尝试做一定的范式转化（比如尽力将其拉平或者排查明显的互斥矛盾）。
+### 3.3 条件范式化 (Canonicalize Qual)
+经由 `canonicalize_qual` 函数，系统会对布尔条件（例如 `WHERE` 限定项）进行逻辑层面的范式转换，展平表达式并排查其中可能存在的互斥或冗余条件。
 
-### 3.4 剩余 SubLink 转换与外层变量绑定
-* 经过 `pull_up_sublinks` 还没解决的杂项子链接（如出现在 `SELECT` 目标列里的标量子查询），在此被包装成 `SubPlan`。
-* `SS_replace_correlation_vars` 会找出对上层查询列的引用，并使用 `Param`（参数）进行绑定，使得父子查询产生实质的数据关联参数。
-* 最后对于 `WHERE` / `HAVING` 的顶层条件，调用 `make_ands_implicit` 退化为 Implicit-AND 的 `List` 结构存放，不再采用显式的 `BoolExpr`。
+### 3.4 杂项 SubLink 转换与变量绑定
+* 针对之前 `pull_up_sublinks` 阶段未能处理的子查询（例如出现在 `SELECT` 目标列集合中的标量子查询），会在此处转换为 `SubPlan` 操作符。
+* `SS_replace_correlation_vars` 会查找子查询中对上层父查询变量的引用，并使用 `Param`（参数）将其绑定，建立父子查询之间的数据依赖关系。
+* 最终，对于 `WHERE` 和 `HAVING` 顶层的条件判断，系统会调用 `make_ands_implicit` 剥除显式的 `BoolExpr` 包装，将其转换为隐式的 `Implicit-AND` 链表结构。
+
+---
 
 ## 4. 后期合并与结构修正
 
-经过表达式洗刷后，`subquery_planner` 在交付给 `grouping_planner` 之前会做最后的清理。
+在表达式处理完毕后，`subquery_planner` 还会进行一些清理操作，然后再将查询树交给 `grouping_planner`。
 
-* **HAVING 下推为 WHERE**: 这是经典的优化手段。系统会扫描 `HAVING` 子句，寻找那些不包含聚合函数、不包含易变函数（Volatile Function）并且不需要等到空分组集产生结果的过滤条件（例如 `HAVING col = 1`）。这些被认为是退化的聚合后过滤，系统会将其克隆或移动到 `WHERE` 列表中，从而在进入 `Aggregate` 算子之前尽早淘汰无关数据。
-* **外连接消除 (Outer Join Elimination)**: 调用 `reduce_outer_joins`。因为上一步各种 `WHERE` 表达式已经被处理，这一步系统会检查如果存在 `WHERE` 强约束要求某空侧列非空（比如 `LEFT JOIN B ON ... WHERE B.id > 10`），此时原本的 `LEFT JOIN` 已经失去保留 null 侧的意义，该外连接会被安全地降级成 `INNER JOIN`。
-* **剔除无用的 Result RTE**: 调用 `remove_useless_result_rtes`。前面补充的或中间产生的不再起实质作用的 Dummy 关联在此被扫地出门。
+* **HAVING 转化为 WHERE**: 系统会检查 `HAVING` 子句中的条件。如果发现其中不包含聚合函数，也不含易失函数（Volatile Function），系统会将其移动或复制到 `WHERE` 子句中去（例如单纯的 `HAVING col = 1`）。这样可以在进入代价较高的 `Aggregate` 分组算子之前提早过滤数据。
+* **外连接消除 (Outer Join Elimination)**: 通过调用 `reduce_outer_joins`。由于之前的步骤化简了 `WHERE` 表达式，系统会检查是否有 `WHERE` 条件要求由于 LEFT/RIGHT JOIN 产生的 NULL 值为非空（例如 `LEFT JOIN B ON ... WHERE B.id > 10`）。如果存在这样的严格限制条件，这个外连接就可以被安全降级为执行效率更高的 `INNER JOIN`。
+* **移除无用 Result RTE**: 最后调用 `remove_useless_result_rtes`，清理前面步骤中产生的，但目前已经失去作用的冗余 `RTE_RESULT` 节点。
 
-至此，一个极其干净、扁平化且逻辑清晰的等价 Query Tree，才会正式交给 `grouping_planner`。
+经过预处理阶段的优化后，查询树被转换为更扁平、逻辑结构更清晰的形式，随后传递给 `grouping_planner` 继续后续优化。
 
-## 源码入口
+---
 
-*   `src/backend/optimizer/plan/planner.c`: `standard_planner` -> `subquery_planner`
-*   该逻辑作为第一阶段的总览，其余各子项优化详情，请查看侧边栏对应小节。
+## 源码参考
+
+*   **核心逻辑位置**：`src/backend/optimizer/plan/planner.c` 中的 `standard_planner` -> `subquery_planner`。
